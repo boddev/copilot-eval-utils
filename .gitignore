@@ -3,3 +3,5 @@ sample-data/WSPEvalSet.csv
 sample-data/WSPEvalSet.xlsx
 output/WSPEvalSet-results.csv
 output/WSPEvalSet-report.md
+node/node_modules/
+node/dist/

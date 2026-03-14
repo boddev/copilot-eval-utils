@@ -10,7 +10,7 @@ import { CliWorkIQClient, resolveSystemPrompt } from './workiq-client';
 import { evaluatePrompts } from './evaluator';
 import { scoreAnswers, calculateScoringResult } from './scorer';
 import { generateReport, writeReport } from './reporter';
-import { runPreflight, printPreflightResults, checkEulaAccepted, recordEulaAcceptance, getEulaUrl } from './setup';
+import { runPreflight, printPreflightResults } from './setup';
 
 async function main(): Promise<void> {
   const program = new Command();
@@ -32,16 +32,11 @@ async function main(): Promise<void> {
 
   // Handle setup-only mode
   if (opts.setup) {
-    const preflightResult = runPreflight(opts.tenantId as string | undefined);
+    const preflightResult = await runPreflight({
+      tenantId: opts.tenantId as string | undefined,
+      skipConnectivityTest: false,
+    });
     printPreflightResults(preflightResult);
-
-    if (!checkEulaAccepted()) {
-      console.error(`  WorkIQ EULA: ${getEulaUrl()}`);
-      console.error('  To accept, run this command:');
-      console.error(`    echo "accepted" > "${process.env.USERPROFILE || process.env.HOME}/.workiq-eula-accepted"`);
-      console.error('');
-    }
-
     process.exit(preflightResult.passed ? 0 : 1);
   }
 
@@ -66,7 +61,10 @@ async function main(): Promise<void> {
 
   // Run preflight checks (unless skipped)
   if (!opts.skipPreflight) {
-    const preflightResult = runPreflight(options.tenantId);
+    const preflightResult = await runPreflight({
+      tenantId: options.tenantId,
+      skipConnectivityTest: true,
+    });
     printPreflightResults(preflightResult);
 
     if (!preflightResult.passed) {
