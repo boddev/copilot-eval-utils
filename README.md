@@ -1,84 +1,131 @@
-# Evaluation CLI
+# Copilot Evaluation Toolkit
 
-## Problem
+This repository is a toolkit for creating and running Microsoft 365 Copilot / WorkIQ evaluations. It contains two related tools:
 
-Organizations adopting Microsoft 365 Copilot (WorkIQ) need a way to systematically measure the quality and accuracy of its responses. Manual spot-checking doesn't scale, and there's no built-in mechanism to benchmark WorkIQ against a known-correct set of answers derived from real workplace data (emails, meetings, documents, Teams messages).
+| Tool | Location | Purpose |
+|------|----------|---------|
+| **EvalGen** | [`eval-gen/`](eval-gen/README.md) | Generates evaluation datasets: prompts, expected answers, source locations, assertions, and review artifacts from source data. |
+| **EvalScore** | [`eval-score/`](eval-score/README.md) | Runs evaluation datasets against WorkIQ / Microsoft 365 Copilot, records actual answers, scores responses, evaluates assertions, and writes reports. |
 
-Without objective measurement, teams can't confidently answer questions like: *"How accurate is Copilot at finding information in our tenant?"*, *"Did our prompt engineering improvements actually help?"*, or *"Which categories of questions does it struggle with?"*
+## End-to-End Workflow
 
-## Solution
+1. **Prepare source data** — Collect connector/source datasets such as CSV, JSON, XLSX, or document files.
+2. **Generate an eval set** — Use [`eval-gen`](eval-gen/README.md) to produce questions and expected answers grounded in the source data.
+3. **Review the eval set** — Inspect the generated CSV, sidecar JSON, and review markdown before running live evaluation.
+4. **Run response evaluation** — Use [`eval-score`](eval-score/README.md) to send prompts to WorkIQ / Microsoft 365 Copilot and record actual answers.
+5. **Score and report** — EvalScore scores semantic similarity, evaluates assertions when available, and writes a completed results file plus markdown report.
 
-The Evaluation CLI is a prompt evaluation framework that automates the process of benchmarking WorkIQ responses. Given a dataset of questions with known-correct answers, it:
+## Repository Structure
 
-1. **Sends each prompt** to WorkIQ targeting a specific M365 tenant
-2. **Records the actual response** returned by WorkIQ
-3. **Scores semantic similarity** between the expected and actual answers on a 0–100 scale (also via WorkIQ)
-4. **Produces a detailed report** — a markdown document with summary statistics, score distributions, and per-question breakdowns showing exactly where WorkIQ succeeded or fell short
-
-The tool supports **resumability** — if a run is interrupted, re-running picks up where it left off. It accepts evaluation datasets in CSV, TSV, XLSX, or JSON format with flexible column header naming.
-
-## Implementations
-
-Two interchangeable implementations are provided. Both accept the same input formats, produce identical output, and support the same parameters. Choose whichever fits your workflow:
-
-- **[Node.js (TypeScript)](node/README.md)** — Usage, parameters, testing, and architecture
-- **[PowerShell](powershell/README.md)** — Usage, parameters, testing, and architecture
-
-## Project Structure
-
-```
+```text
 EvaluationCLI/
-├── node/                          # TypeScript/Node.js implementation
-│   ├── src/
-│   │   ├── index.ts               #   CLI entry point (commander)
-│   │   ├── types.ts               #   Shared interfaces
-│   │   ├── evaluator.ts           #   Prompt evaluation loop
-│   │   ├── scorer.ts              #   Semantic similarity scoring
-│   │   ├── reporter.ts            #   Markdown report generation
-│   │   ├── workiq-client.ts       #   WorkIQ integration layer
-│   │   ├── readers/               #   CSV, TSV, XLSX, JSON readers
-│   │   └── writers/               #   Matching output writers
-│   └── tests/                     #   Vitest test suite (28 tests)
+├── eval-gen/                       # Evaluation set generator
+│   ├── src/                        # EvalGen TypeScript source
+│   ├── tests/                      # EvalGen Vitest tests
+│   ├── examples/                   # Example connector schema files
+│   └── README.md                   # Deep EvalGen documentation
 │
-├── powershell/                    # PowerShell implementation
-│   ├── Invoke-Evaluation.ps1      #   CLI entry point
-│   ├── src/
-│   │   ├── Types.ps1              #   Shared classes
-│   │   ├── Evaluator.ps1          #   Prompt evaluation loop
-│   │   ├── Scorer.ps1             #   Semantic similarity scoring
-│   │   ├── Reporter.ps1           #   Markdown report generation
-│   │   ├── WorkIQClient.ps1       #   WorkIQ integration layer
-│   │   ├── Readers.ps1            #   CSV, TSV, XLSX, JSON readers
-│   │   └── Writers.ps1            #   Matching output writers
-│   └── tests/                     #   Pester test suite (24 tests)
+├── eval-score/                 # WorkIQ / M365 Copilot response evaluation
+│   ├── node/                       # TypeScript implementation
+│   ├── powershell/                 # PowerShell implementation
+│   └── README.md                   # Deep EvalScore documentation
 │
-├── sample-data/                   # Shared example evaluation datasets
-│   └── example-eval-set.csv
-│
-├── .copilot/skills/               # Copilot CLI skill definition
-│   └── evaluate.md
-│
-└── .github/
-    └── copilot-instructions.md    # Copilot context for this repository
+├── environment-datasets/           # Local connector/source datasets for eval generation
+├── eval-output/                    # Local generated eval sets and reports
+├── .copilot/skills/                # Copilot CLI skill definitions
+└── .github/                        # Repository-specific Copilot instructions
 ```
 
-## Evaluation File Format
+## What Each Tool Produces
 
-Evaluation datasets can be CSV, TSV, XLSX, or JSON. Column headers are flexible — the tool normalizes common variations automatically.
+### EvalGen
 
-| Column | Accepted Header Names | Description |
-|--------|----------------------|-------------|
-| Prompt | `prompt`, `question`, `Prompt`, `Question` | The question to send to WorkIQ |
-| Expected Answer | `expected_answer`, `expectedAnswer`, `Expected Answer` | The known-correct answer |
-| Source Location | `source_location`, `sourceLocation`, `Source Location` | Where in M365 the answer is found |
-| Actual Answer | `actual_answer`, `actualAnswer`, `Actual Answer` | WorkIQ's response (initially blank) |
+EvalGen produces EvalScore-ready input:
 
-## Output
+- `<name>.csv` with `prompt`, `expected_answer`, `source_location`, and empty `actual_answer`
+- `<name>.evalgen.json` sidecar with assertions and metadata
+- `<name>-review.md` for human review
+- Optional connector diagnostics when a connector schema is supplied
 
-Both implementations produce two files in the output directory:
+EvalGen does **not** evaluate live Copilot responses. It prepares the evaluation set.
 
-- **`<input-name>-results.<ext>`** — A copy of the evaluation file with the `actual_answer` and `similarity_score` columns populated
-- **`<input-name>-report.md`** — A markdown report containing:
-  - Summary statistics (average score, pass rate, min/max)
-  - Score distribution chart (Excellent / Good / Fair / Poor)
-  - Per-question detail with prompt, expected answer, actual answer, score, and pass/fail status
+### EvalScore
+
+EvalScore consumes an eval set and produces scored results:
+
+- `<input-name>-results.<ext>` with `actual_answer`, similarity score, and assertion results when available
+- `<input-name>-report.md` with score distribution, pass/fail summary, and per-question details
+
+EvalScore is the tool that sends prompts to WorkIQ / Microsoft 365 Copilot.
+
+## Install and Uninstall the Command-Line Tools
+
+Install both command-line tools once from the repository root:
+
+```cmd
+cd C:\Users\bodonnell\src\EvaluationCLI
+install-tools.cmd
+```
+
+The installer restores dependencies, builds both TypeScript tools, and links command shims. After it completes, both commands are available from Command Prompt:
+
+```cmd
+eval-gen --help
+eval-score --help
+```
+
+To remove the command shims:
+
+```cmd
+cd C:\Users\bodonnell\src\EvaluationCLI
+uninstall-tools.cmd
+```
+
+To also remove local `node_modules` and `dist` directories:
+
+```cmd
+uninstall-tools.cmd -CleanLocal
+```
+
+## Quick Start
+
+Generate an eval set from the full environment dataset:
+
+```powershell
+cd C:\Users\bodonnell\src\EvaluationCLI
+
+eval-gen `
+  --file ".\environment-datasets" `
+  --extensions csv `
+  --description "Environmental datasets for the NGO environment Copilot connector, including Our World in Data CO2 and greenhouse gas metrics plus World Bank climate and environmental indicators by country or region and year." `
+  --count 50 `
+  --connector-schema ".\eval-gen\examples\environment-datasets-connector-schema.json" `
+  --output ".\eval-output\environment-datasets-eval.csv"
+```
+
+Run that eval set against WorkIQ / Microsoft 365 Copilot:
+
+```powershell
+cd C:\Users\bodonnell\src\EvaluationCLI
+
+eval-score `
+  --input ".\eval-output\environment-datasets-eval.csv" `
+  --sidecar ".\eval-output\environment-datasets-eval.evalgen.json"
+```
+
+See the deep-dive documentation for full usage, options, providers, and troubleshooting:
+
+- [EvalGen documentation](eval-gen/README.md)
+- [EvalScore documentation](eval-score/README.md)
+- [Node.js EvalScore implementation](eval-score/node/README.md)
+- [PowerShell EvalScore implementation](eval-score/powershell/README.md)
+
+## Git Hygiene
+
+Do **not** commit generated dependency or build output directories.
+
+- `node_modules/` is generated by package managers.
+- `dist/` is generated by TypeScript builds.
+- Both are ignored everywhere by `.gitignore`.
+- If a `dist` or `node_modules` file appears in Git status, remove it from the index with `git rm --cached` rather than committing it.
+

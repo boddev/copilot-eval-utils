@@ -1,11 +1,11 @@
-# Copilot Instructions — EvaluationCLI
+# Copilot Instructions — EvalScore
 
 ## Build, Test, and Lint
 
-### Node.js (in `node/`)
+### Node.js (in `eval-score/node/`)
 
 ```bash
-cd node
+cd eval-score/node
 npm install          # Install dependencies
 npm run build        # TypeScript compile (tsc)
 npm run lint         # Type-check without emitting (tsc --noEmit)
@@ -14,10 +14,10 @@ npx vitest run tests/readers.test.ts   # Single test file
 npx vitest run -t "score clamping"     # Tests matching pattern
 ```
 
-### PowerShell (in `powershell/`)
+### PowerShell (in `eval-score/powershell/`)
 
 ```powershell
-cd powershell
+cd eval-score/powershell
 Invoke-Pester -Path tests -Output Detailed              # All tests
 Invoke-Pester -Path tests\Readers.Tests.ps1              # Single test file
 Invoke-Pester -Path tests -Filter @{ FullName = '*CSV*' } # Pattern match
@@ -31,7 +31,7 @@ Two interchangeable implementations (Node.js + PowerShell) that produce identica
 
 **Data flow:** Read evaluation file → Send each prompt to WorkIQ → Record responses → Score semantic similarity → Write results file + markdown report.
 
-### Node.js (`node/`)
+### Node.js (`eval-score/node/`)
 - `src/index.ts` — CLI entry (commander), orchestrates the pipeline
 - `src/workiq-client.ts` — Pluggable `WorkIQClient` interface; `CliWorkIQClient` calls `workiq` CLI directly, `MockWorkIQClient` for tests
 - `src/evaluator.ts` — Sequential evaluation loop with resumability
@@ -40,7 +40,7 @@ Two interchangeable implementations (Node.js + PowerShell) that produce identica
 - `src/readers/` — Factory-pattern readers (CSV, TSV, XLSX, JSON) with header normalization
 - `src/writers/` — Matching writers preserving input format
 
-### PowerShell (`powershell/`)
+### PowerShell (`eval-score/powershell/`)
 - `Invoke-Evaluation.ps1` — CLI entry script with CmdletBinding parameters
 - `src/WorkIQClient.ps1` — `Send-WorkIQRequest` (calls `workiq` CLI), `New-MockWorkIQClient` (testing)
 - `src/Evaluator.ps1` — `Invoke-Evaluation` with `-AskClient` scriptblock support
@@ -50,7 +50,8 @@ Two interchangeable implementations (Node.js + PowerShell) that produce identica
 - `src/Writers.ps1` — `Write-EvalFile` preserving format
 
 ### Shared
-- `sample-data/` — Example evaluation datasets
+- `environment-datasets/` — Local connector/source datasets for eval generation
+- `eval-output/` — Local generated eval sets and reports when present
 - `.copilot/skills/evaluate.md` — Copilot CLI skill definition
 
 ## Conventions

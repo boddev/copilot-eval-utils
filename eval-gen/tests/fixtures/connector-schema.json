@@ -1,0 +1,8 @@
+{
+  "name": "WSP Suppliers Connector",
+  "contentFields": ["supplier_name", "status", "risk_rating", "owner", "region", "services", "procurement_business_unit"],
+  "titleField": "supplier_name",
+  "urlField": null,
+  "hasSummaryItems": false,
+  "connectionDescription": "WSP supplier procurement data including supplier details, risk ratings, and regional assignments"
+}

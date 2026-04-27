@@ -1,0 +1,16 @@
+supplier_id,supplier_name,status,risk_rating,owner,contract_value,renewal_date,region,procurement_business_unit,services
+SUP-001,Acme Corp,Active,High,Jane Smith,250000,2026-06-15,Canada,WSP CA,"IT Consulting, Cloud Services"
+SUP-002,GlobalTech Solutions,Active,Medium,John Davis,180000,2026-03-01,United States,WSP USA,Software Development
+SUP-003,Northern Services Ltd,Active,Low,Sarah Chen,95000,2026-09-30,United Kingdom,WSP UK,"Facilities Management, Cleaning"
+SUP-004,DataVault Inc,Active,High,Michael Brown,420000,2026-12-01,Canada,WSP CA,"Data Analytics, AI Services"
+SUP-005,EuroConsult GmbH,Inactive,Medium,Lisa Mueller,150000,2025-01-15,United Kingdom,WSP UK,Management Consulting
+SUP-006,Pacific Traders,Active,Low,David Park,75000,2026-07-20,United States,WSP USA,Office Supplies
+SUP-007,TechBridge Systems,Active,High,Amanda Torres,310000,2026-04-10,Canada,WSP CA,"Cybersecurity, Network Services"
+SUP-008,Allied Construction,Active,Medium,Robert Kim,520000,2027-02-28,United States,WSP USA,"Construction, Project Management"
+SUP-009,CloudFirst Analytics,Active,Low,Emily Watson,88000,2026-11-15,Canada,WSP CA,Business Intelligence
+SUP-010,Meridian Partners,Active,Medium,James Wilson,195000,2026-08-01,United Kingdom,WSP UK,"Legal Services, Compliance"
+SUP-011,,,,,,,,,
+SUP-012,Zenith Innovations,Active,High,Priya Patel,375000,2026-05-20,India,WSP IN,"R&D, Product Development"
+SUP-013,Desert Solutions,Active,Medium,Omar Hassan,210000,2026-10-15,United Arab Emirates,WSP UAE,Engineering Services
+SUP-014,Cape Logistics,Active,Low,Thabo Ndlovu,125000,2027-01-10,South Africa,WSP ZAF,"Logistics, Supply Chain"
+SUP-015,Summit Energy,Active,High,Carlos Rivera,450000,2026-06-30,Canada,WSP CA,"Energy Consulting, Sustainability"

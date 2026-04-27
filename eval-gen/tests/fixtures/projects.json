@@ -1,0 +1,7 @@
+[
+  {"id": 1, "project_name": "Apollo", "status": "Active", "owner": "Alice Johnson", "budget": 500000, "start_date": "2025-01-15", "end_date": "2026-06-30", "department": "Engineering", "priority": "High"},
+  {"id": 2, "project_name": "Mercury", "status": "Completed", "owner": "Bob Williams", "budget": 250000, "start_date": "2024-06-01", "end_date": "2025-03-31", "department": "Marketing", "priority": "Medium"},
+  {"id": 3, "project_name": "Titan", "status": "Active", "owner": "Carol Davis", "budget": 750000, "start_date": "2025-03-01", "end_date": "2027-01-15", "department": "Engineering", "priority": "Critical"},
+  {"id": 4, "project_name": "Orion", "status": "On Hold", "owner": "Dan Lee", "budget": 120000, "start_date": "2025-04-01", "end_date": "2025-12-31", "department": "Research", "priority": "Low"},
+  {"id": 5, "project_name": "Nova", "status": "Active", "owner": "Eve Martinez", "budget": 300000, "start_date": "2025-02-15", "end_date": "2026-02-15", "department": "Product", "priority": "High"}
+]

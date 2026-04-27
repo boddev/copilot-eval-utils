@@ -1,0 +1,28 @@
+{
+  "name": "eval-score",
+  "version": "1.0.0",
+  "description": "A Copilot CLI skill that evaluates WorkIQ answers against a known-correct dataset",
+  "main": "dist/index.js",
+  "bin": {
+    "eval-score": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "csv-parse": "^5.6.0",
+    "csv-stringify": "^6.5.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

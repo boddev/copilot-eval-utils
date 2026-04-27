@@ -1,0 +1,19 @@
+{
+  "name": "copilot-evaluation-tools",
+  "version": "1.0.0",
+  "description": "Tools for generating and scoring Microsoft 365 Copilot evaluation sets",
+  "bin": {
+    "eval-gen": "eval-gen/dist/index.js",
+    "eval-score": "eval-score/node/dist/index.js"
+  },
+  "scripts": {
+    "restore:tools": "npm install --prefix eval-gen && npm install --prefix eval-score/node",
+    "build": "npm run build --prefix eval-gen && npm run build --prefix eval-score/node",
+    "lint": "npm run lint --prefix eval-gen && npm run lint --prefix eval-score/node",
+    "test:eval-gen": "npm test --prefix eval-gen",
+    "test:eval-score": "npm test --prefix eval-score/node",
+    "install:tools": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-tools.ps1",
+    "uninstall:tools": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\uninstall-tools.ps1",
+    "link:tools": "npm run install:tools"
+  }
+}

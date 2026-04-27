@@ -15,19 +15,18 @@ When the user wants to evaluate WorkIQ prompts, follow this process:
 
 2. **Identify the system prompt** (optional) — Ask if they want to provide a system prompt (inline or as a file path).
 
-3. **Run the evaluation CLI tool** (PowerShell):
+3. **Run EvalScore** (Node.js command):
+   ```bash
+   eval-score --input <path-to-eval-file> [--system-prompt "..."] [--system-prompt-file <path>] [--output-dir <dir>] [--threshold <0-100>] [--tenant-id <id>]
+   ```
+
+   Or use the PowerShell implementation directly:
    ```powershell
-   cd C:\Users\bodonnell\src\EvaluationCLI\powershell
+   cd C:\Users\bodonnell\src\EvaluationCLI\eval-score\powershell
    .\Invoke-Evaluation.ps1 -InputFile <path-to-eval-file> [-SystemPrompt "..."] [-SystemPromptFile <path>] [-OutputDir <dir>] [-Threshold <0-100>] [-TenantId <id>]
    ```
 
-   Or (Node.js):
-   ```bash
-   cd C:\Users\bodonnell\src\EvaluationCLI\node
-   npx ts-node src/index.ts --input <path-to-eval-file> [--system-prompt "..."] [--system-prompt-file <path>] [--output-dir <dir>] [--threshold <0-100>] [--tenant-id <id>]
-   ```
-
-4. **The tool calls WorkIQ directly** — Each prompt is sent to the `workiq` CLI (`workiq ask -q "question"`). No intermediary files or agent processing is needed.
+4. **The tool calls WorkIQ directly** — Each prompt is sent through the local WorkIQ CLI/MCP integration. No intermediary files or agent processing is needed.
 
 5. **Report results** — Once complete, the tool produces:
    - A completed evaluation file with actual answers and similarity scores
