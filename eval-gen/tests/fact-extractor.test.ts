@@ -54,6 +54,33 @@ describe('extractFacts', () => {
 
     expect(facts.length).toBeLessThanOrEqual(10);
   });
+
+  it('honors explicit targetRecords (decoupled from maxFacts)', () => {
+    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+    const profile = profileDataset(records, 'suppliers.csv', format);
+
+    // Default behavior: small maxFacts caps the row pool because the function
+    // stops emitting facts once maxFacts is hit.
+    const defaultFacts = extractFacts(records, profile, 20);
+    const defaultRows = new Set(defaultFacts.map(f => f.rowReference)).size;
+
+    // With explicit targetRecords + maxFactsPerRecord, the row pool can scale
+    // independently of the fact budget — wide schemas no longer starve it.
+    const expandedFacts = extractFacts(records, profile, {
+      maxFacts: 200,
+      targetRecords: Math.min(records.length, records.length),
+      maxFactsPerRecord: 2,
+    });
+    const expandedRows = new Set(expandedFacts.map(f => f.rowReference)).size;
+    expect(expandedRows).toBeGreaterThanOrEqual(defaultRows);
+
+    // maxFactsPerRecord is enforced
+    const counts = new Map<string, number>();
+    for (const f of expandedFacts) counts.set(f.rowReference, (counts.get(f.rowReference) ?? 0) + 1);
+    for (const c of counts.values()) {
+      expect(c).toBeLessThanOrEqual(2);
+    }
+  });
 });
 
 describe('groupFactsByRecord', () => {
@@ -83,5 +110,14 @@ describe('summarizeFacts', () => {
     const summary = summarizeFacts(facts, 5);
     expect(summary).toContain('suppliers.csv:row');
     expect(summary.split('\n').length).toBeLessThanOrEqual(5);
+  });
+
+  it('includes [f-N] fact IDs so the LLM can cite specific facts', () => {
+    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+    const profile = profileDataset(records, 'suppliers.csv', format);
+    const facts = extractFacts(records, profile, 100);
+
+    const summary = summarizeFacts(facts, 5);
+    expect(summary).toMatch(/\[f-\d+\]/);
   });
 });

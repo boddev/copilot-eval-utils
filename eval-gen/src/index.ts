@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     .option('--output <path>', 'Output file path', './output/eval-set.csv')
     .option('--connector-schema <path>', 'Optional connector schema JSON for field awareness')
     .option('--no-review', 'Skip review output generation')
-    .option('--provider <name>', 'LLM provider: m365-copilot, m365-copilot-api, azure-openai, github-copilot, or command', 'm365-copilot')
+    .option('--provider <name>', 'LLM provider: m365-copilot (default; WorkIQ MCP), workiq-a2a (Work IQ A2A API), m365-copilot-api, azure-openai, github-copilot, or command', 'm365-copilot')
     .option('--model <name>', 'Azure OpenAI model deployment name', 'gpt-4o')
     .option('--llm-command <command>', 'Command to run when --provider command is selected')
     .option('--m365-time-zone <zone>', 'Time zone for Microsoft 365 Copilot Chat API locationHint')
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     .option('--output <path>', 'Output file path', './output/eval-set.csv')
     .option('--connector-schema <path>', 'Optional connector schema JSON')
     .option('--no-review', 'Skip review output generation')
-    .option('--provider <name>', 'LLM provider: m365-copilot, m365-copilot-api, azure-openai, github-copilot, or command', 'm365-copilot')
+    .option('--provider <name>', 'LLM provider: m365-copilot (default; WorkIQ MCP), workiq-a2a (Work IQ A2A API), m365-copilot-api, azure-openai, github-copilot, or command', 'm365-copilot')
     .option('--model <name>', 'Azure OpenAI model deployment name', 'gpt-4o')
     .option('--llm-command <command>', 'Command to run when --provider command is selected')
     .option('--m365-time-zone <zone>', 'Time zone for Microsoft 365 Copilot Chat API locationHint')
@@ -241,8 +241,16 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
 
   // 3. Extract facts
   console.error(`Step ${step++}/${totalSteps}: Extracting facts...`);
-  const facts = extractFacts(records, profile, 200);
-  console.error(`  Extracted ${facts.length} facts from stratified sample`);
+  // Decouple row count from column count so the row pool scales with the
+  // requested question count. Aim for ~4× count rows (or 100, whichever larger)
+  // to give pre-assignment room and supporting-fact breadth.
+  const targetRecords = Math.min(records.length, Math.max(100, options.count * 4));
+  const factBudget = Math.max(200, targetRecords * 8);
+  const facts = extractFacts(records, profile, {
+    maxFacts: factBudget,
+    targetRecords,
+  });
+  console.error(`  Extracted ${facts.length} facts from ${new Set(facts.map(f => f.rowReference)).size} distinct records`);
 
   // Dry-run: profile + diagnostics only, no LLM calls
   if (options.dryRun) {
@@ -270,7 +278,16 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
     throw new Error('LLM client was not initialized');
   }
 
-  const intents = await generateIntents(profile, facts, options.description, options.count, client);
+  // Pre-assign one distinct row per intent slot so questions deterministically
+  // spread across the row pool instead of clustering on a few rows.
+  const rowPool = Array.from(new Set(facts.map(f => f.rowReference)));
+  const assignedRows: string[] = [];
+  for (let i = 0; i < options.count; i++) {
+    assignedRows.push(rowPool[i % Math.max(1, rowPool.length)]);
+  }
+  console.error(`  Pre-assigned ${assignedRows.length} primary rows from a pool of ${rowPool.length}`);
+
+  const intents = await generateIntents(profile, facts, options.description, options.count, client, assignedRows);
   console.error(`  Generated ${intents.length} question intents`);
 
   const drafted = await draftQuestions(intents, facts, records, profile, options.description, client);
@@ -350,7 +367,21 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
   }
   console.log(`  Questions:     ${validated.length}`);
   console.log(`  Assertions:    ${totalAssertions}`);
-  console.log(`  Coverage:      ${Math.round(result.coverageScore * 100)}%`);
+  if (result.uniqueRowsReferenced !== undefined && result.totalRows !== undefined && result.totalRows > 0) {
+    console.log(`  Coverage:      ${Math.round(result.coverageScore * 100)}% (${result.uniqueRowsReferenced} of ${result.totalRows} source rows tested)`);
+    if (result.datasetSampledNotExhaustive) {
+      console.log(`                 ℹ Eval set is a representative sample — exhaustive coverage on a ${result.totalRows}-row dataset isn't practical.`);
+      console.log(`                 ℹ For broader testing, generate multiple eval sets with focused --description targeting different segments.`);
+    } else if (
+      result.recommendedCountForTarget !== undefined &&
+      result.coverageScore < 0.75 &&
+      result.recommendedCountForTarget > validated.length
+    ) {
+      console.log(`                 ℹ For ≥75% coverage, increase --count from ${validated.length} to ~${result.recommendedCountForTarget}.`);
+    }
+  } else {
+    console.log(`  Coverage:      ${Math.round(result.coverageScore * 100)}%`);
+  }
   console.log(`  Duplicates:    ${result.duplicatesRemoved} removed`);
 
   const highConf = validated.filter(i => i.grounding_confidence === 'high').length;

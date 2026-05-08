@@ -2,7 +2,7 @@
 param(
     [string]$ConnectorId = 'ngoenvironment',
     [string]$TenantId,
-    [int]$Count = 10,
+    [int]$Count = 50,
     [int]$Threshold = 70,
     [string]$Provider = 'm365-copilot',
     [string]$DatasetPath,

@@ -74,14 +74,29 @@ function checkCategoryBalance(
 }
 
 /**
- * Compute coverage: what fraction of unique source locations are referenced
+ * Compute coverage: fraction of source rows the eval set actually exercises.
+ *
+ * Counts every row referenced as either a primary `source_location` or as
+ * evidence via `referenced_rows` (resolved from supporting_fact_ids). The
+ * denominator is bounded by `min(totalRows, items*3)` since each question
+ * realistically touches ~1 primary + ~2 supporting rows; this keeps the
+ * metric achievable when the eval count is much smaller than the dataset.
  */
 function computeCoverage(
   items: GeneratedEvalItem[],
   totalRows: number,
 ): number {
-  const referencedRows = new Set(items.map(i => i.source_location));
-  return totalRows > 0 ? referencedRows.size / Math.min(totalRows, items.length * 2) : 0;
+  if (totalRows <= 0) return 0;
+  const referencedRows = new Set<string>();
+  for (const item of items) {
+    if (item.source_location) referencedRows.add(item.source_location);
+    for (const r of item.referenced_rows ?? []) {
+      if (r) referencedRows.add(r);
+    }
+  }
+  const realisticTouchBudget = Math.max(items.length * 3, 50);
+  const denom = Math.min(totalRows, realisticTouchBudget);
+  return denom > 0 ? referencedRows.size / denom : 0;
 }
 
 /**
@@ -101,17 +116,22 @@ export function buildEvalItems(
   questions: DraftedQuestion[],
   assertionMap: Map<number, Assertion[]>,
 ): GeneratedEvalItem[] {
-  return questions.map((q, i) => ({
-    id: generateItemId(q.prompt, q.source_location),
-    prompt: q.prompt,
-    expected_answer: q.expected_answer,
-    source_location: q.source_location,
-    assertions: assertionMap.get(i) ?? [],
-    category: q.category,
-    difficulty: q.difficulty,
-    supporting_facts: q.supporting_facts ?? [],
-    grounding_confidence: computeGroundingConfidence(q),
-  }));
+  return questions.map((q, i) => {
+    const referencedRows = new Set<string>(q.referenced_rows ?? []);
+    if (q.source_location) referencedRows.add(q.source_location);
+    return {
+      id: generateItemId(q.prompt, q.source_location),
+      prompt: q.prompt,
+      expected_answer: q.expected_answer,
+      source_location: q.source_location,
+      assertions: assertionMap.get(i) ?? [],
+      category: q.category,
+      difficulty: q.difficulty,
+      supporting_facts: q.supporting_facts ?? [],
+      grounding_confidence: computeGroundingConfidence(q),
+      referenced_rows: Array.from(referencedRows),
+    };
+  });
 }
 
 /**
@@ -142,8 +162,53 @@ export function validateEvalSet(
 
   // Coverage
   const coverageScore = computeCoverage(deduplicated, totalRows);
-  if (coverageScore < 0.3) {
-    issues.push(`Low source coverage (${Math.round(coverageScore * 100)}%) — questions reference too few records`);
+  const COVERAGE_TARGET = 0.75;
+  const CLI_COUNT_CAP = 50; // matches CLI clamp in src/index.ts
+
+  // Compute the actual unique-row count once for richer messaging
+  const referencedRows = new Set<string>();
+  for (const item of deduplicated) {
+    if (item.source_location) referencedRows.add(item.source_location);
+    for (const r of item.referenced_rows ?? []) {
+      if (r) referencedRows.add(r);
+    }
+  }
+  const uniqueRowsReferenced = referencedRows.size;
+
+  const realisticTouchBudget = deduplicated.length * 3;
+  const realisticMaxCoverage = totalRows > 0
+    ? Math.min(1.0, realisticTouchBudget / totalRows)
+    : 0;
+  const recommendedCountForTarget = totalRows > 0
+    ? Math.ceil((totalRows * COVERAGE_TARGET) / 3)
+    : 0;
+  const datasetSampledNotExhaustive = totalRows > 0
+    && recommendedCountForTarget > CLI_COUNT_CAP;
+
+  const pct = (v: number) => Math.round(v * 100);
+
+  if (totalRows > 0 && deduplicated.length > 0 && coverageScore < COVERAGE_TARGET) {
+    if (realisticMaxCoverage >= COVERAGE_TARGET) {
+      // Coverage is achievable with current count — LLM clustered questions
+      issues.push(
+        `Coverage ${pct(coverageScore)}% (${uniqueRowsReferenced}/${totalRows} rows) is below the ${pct(COVERAGE_TARGET)}% target. ` +
+        `The current count (${deduplicated.length}) can reach the target — re-run to encourage broader row spread, or bump --count slightly.`
+      );
+    } else if (recommendedCountForTarget <= CLI_COUNT_CAP) {
+      // Achievable by modestly increasing --count
+      issues.push(
+        `Coverage ${pct(coverageScore)}% (${uniqueRowsReferenced}/${totalRows} rows). ` +
+        `For ≥${pct(COVERAGE_TARGET)}% coverage on this dataset, increase --count from ${deduplicated.length} to ~${recommendedCountForTarget}.`
+      );
+    } else {
+      // Dataset too large for exhaustive coverage — reframe as representative sample
+      issues.push(
+        `Dataset is large (${totalRows} rows) — exhaustive coverage isn't practical for an eval set. ` +
+        `This eval set tests ${uniqueRowsReferenced} representative rows (${pct(coverageScore)}%). ` +
+        `For broader testing, generate multiple eval sets with focused --description values targeting different segments of your data ` +
+        `(e.g., by category, time period, or status).`
+      );
+    }
   }
 
   // Check for low-confidence items
@@ -163,6 +228,11 @@ export function validateEvalSet(
       categoryBalance,
       coverageScore,
       issues,
+      uniqueRowsReferenced,
+      totalRows,
+      realisticMaxCoverage,
+      recommendedCountForTarget,
+      datasetSampledNotExhaustive,
     },
   };
 }

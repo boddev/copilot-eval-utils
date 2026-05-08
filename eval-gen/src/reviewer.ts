@@ -19,7 +19,22 @@ export function formatReview(
   lines.push(`**Generated:** ${new Date().toISOString()}`);
   lines.push(`**Total questions:** ${validation.totalItems}`);
   lines.push(`**Duplicates removed:** ${validation.duplicatesRemoved}`);
-  lines.push(`**Coverage score:** ${Math.round(validation.coverageScore * 100)}%`);
+  if (validation.uniqueRowsReferenced !== undefined && validation.totalRows !== undefined && validation.totalRows > 0) {
+    lines.push(`**Coverage:** ${Math.round(validation.coverageScore * 100)}% — ${validation.uniqueRowsReferenced} of ${validation.totalRows} source rows tested`);
+    if (validation.datasetSampledNotExhaustive) {
+      lines.push('');
+      lines.push('> ℹ️ **Representative sample.** This dataset is too large for an eval set to exhaustively cover every record. The questions above test a diverse, stratified sample. For broader testing, generate multiple eval sets with focused `--description` values targeting different segments (e.g., by category, time period, or status).');
+    } else if (
+      validation.recommendedCountForTarget !== undefined &&
+      validation.coverageScore < 0.75 &&
+      validation.recommendedCountForTarget > validation.totalItems
+    ) {
+      lines.push('');
+      lines.push(`> ℹ️ For ≥75% coverage of this dataset, re-run with \`--count ${validation.recommendedCountForTarget}\`.`);
+    }
+  } else {
+    lines.push(`**Coverage score:** ${Math.round(validation.coverageScore * 100)}%`);
+  }
   lines.push('');
 
   // Category distribution

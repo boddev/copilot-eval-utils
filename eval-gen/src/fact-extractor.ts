@@ -1,28 +1,53 @@
 import { Fact, DatasetProfile, ColumnProfile } from './types';
 
+export interface ExtractFactsOptions {
+  /** Hard cap on total facts emitted (default 200) */
+  maxFacts?: number;
+  /** Target distinct records to sample (default scales with maxFacts; floor 50) */
+  targetRecords?: number;
+  /** Cap facts emitted per record (default unlimited) */
+  maxFactsPerRecord?: number;
+}
+
 /**
  * Extract atomic facts from dataset records using stratified sampling.
  * Selects diverse records covering common values, rare values, extremes, and nulls.
+ *
+ * Accepts either a number (legacy `maxFacts`) or an options object so that
+ * `targetRecords` can scale independently — wide-schema datasets otherwise
+ * exhaust `maxFacts` after only a handful of rows.
  */
 export function extractFacts(
   records: Record<string, unknown>[],
   profile: DatasetProfile,
-  maxFacts: number = 200,
+  optionsOrMaxFacts: number | ExtractFactsOptions = 200,
 ): Fact[] {
+  const opts: ExtractFactsOptions =
+    typeof optionsOrMaxFacts === 'number' ? { maxFacts: optionsOrMaxFacts } : optionsOrMaxFacts;
+  const maxFacts = opts.maxFacts ?? 200;
+  const explicitTargetRecords = opts.targetRecords;
+  const maxFactsPerRecord = opts.maxFactsPerRecord ?? Number.POSITIVE_INFINITY;
+
   const facts: Fact[] = [];
-  const selectedIndices = selectStratifiedIndices(records, profile, maxFacts);
+  const selectedIndices = selectStratifiedIndices(
+    records,
+    profile,
+    maxFacts,
+    explicitTargetRecords,
+  );
 
   let factId = 0;
   for (const rowIndex of selectedIndices) {
     const record = records[rowIndex];
-    // Use per-record _source_file if available (multi-file mode), else profile.fileName
     const fileLabel = record._source_file ? String(record._source_file) : profile.fileName;
     const rowRef = `${fileLabel}:row ${rowIndex + 1}`;
 
+    let factsForThisRecord = 0;
     for (const col of profile.columns) {
+      if (factsForThisRecord >= maxFactsPerRecord) break;
       const value = record[col.name];
       if (value === null || value === undefined || value === '') continue;
-      if (col.name === '_source_file') continue; // Skip the metadata field
+      if (col.name === '_source_file') continue;
 
       facts.push({
         id: `f-${++factId}`,
@@ -31,6 +56,7 @@ export function extractFacts(
         rowReference: rowRef,
         record: { ...record },
       });
+      factsForThisRecord++;
     }
 
     if (facts.length >= maxFacts) break;
@@ -51,8 +77,15 @@ function selectStratifiedIndices(
   records: Record<string, unknown>[],
   profile: DatasetProfile,
   maxFacts: number,
+  explicitTargetRecords?: number,
 ): number[] {
-  const targetRecords = Math.min(records.length, Math.ceil(maxFacts / Math.max(1, profile.columns.length)));
+  // Decouple row count from column width so wide schemas don't starve the row pool.
+  // Default floor of 50 records when available; callers can pass an explicit target.
+  const defaultTarget = Math.max(50, Math.ceil(maxFacts / 5));
+  const targetRecords = Math.min(
+    records.length,
+    explicitTargetRecords ?? defaultTarget,
+  );
   const selected = new Set<number>();
 
   // 1. Records with extreme numeric values
@@ -119,7 +152,8 @@ export function groupFactsByRecord(facts: Fact[]): Map<string, Fact[]> {
 }
 
 /**
- * Get a summary of facts for LLM context (limits token usage)
+ * Get a summary of facts for LLM context (limits token usage).
+ * Each fact line is prefixed with its stable [f-N] ID so the LLM can cite specific facts.
  */
 export function summarizeFacts(facts: Fact[], maxRecords: number = 15): string {
   const grouped = groupFactsByRecord(facts);
@@ -130,7 +164,7 @@ export function summarizeFacts(facts: Fact[], maxRecords: number = 15): string {
     if (count >= maxRecords) break;
 
     const fields = recordFacts
-      .map(f => `${f.field}=${JSON.stringify(f.value)}`)
+      .map(f => `[${f.id}] ${f.field}=${JSON.stringify(f.value)}`)
       .join(', ');
     lines.push(`[${rowRef}] ${fields}`);
     count++;

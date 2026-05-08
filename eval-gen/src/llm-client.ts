@@ -12,6 +12,8 @@ interface LLMClientOptions {
   m365TimeZone?: string;
   m365AccessToken?: string;
   m365TenantId?: string;
+  maxAttempts?: number;
+  backoffBaseMs?: number;
 }
 
 const M365_COPILOT_SCOPES = [
@@ -25,6 +27,101 @@ const M365_COPILOT_SCOPES = [
 ];
 
 /**
+ * Parse the WorkIQ MCP request timeout from EVALGEN_LLM_TIMEOUT_MS.
+ * Falls back to 300000 ms (5 minutes) when unset or invalid.
+ */
+function parseTimeoutMsEnv(): number {
+  const raw = process.env.EVALGEN_LLM_TIMEOUT_MS;
+  if (!raw) return 300000;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 300000;
+  return parsed;
+}
+
+/**
+ * Parse a positive integer env var, falling back to a default when unset/invalid.
+ */
+function parsePositiveIntEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue;
+  return parsed;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Jittered exponential backoff: baseMs * 2^(attempt-1) + random(0..baseMs).
+ */
+function computeBackoffMs(baseMs: number, attempt: number): number {
+  const exponential = baseMs * Math.pow(2, attempt - 1);
+  const jitter = Math.random() * baseMs;
+  return exponential + jitter;
+}
+
+/**
+ * Returns true when an M365 Copilot Chat API failure is likely transient.
+ * Retries on 408/429/500/502/503/504, network errors, and empty-message
+ * responses. 401/403/400 and other 4xx are NOT retryable (auth or input errors).
+ */
+export function isRetryableCopilotApiError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err instanceof GraphApiError) {
+    return err.status === 408 || err.status === 429 || (err.status >= 500 && err.status <= 599);
+  }
+  const message = err.message.toLowerCase();
+  if (message.includes('did not return a conversation id') || message.includes('returned no message text')) {
+    return true;
+  }
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('econnreset') ||
+    message.includes('epipe') ||
+    message.includes('etimedout') ||
+    message.includes('socket hang up') ||
+    message.includes('fetch failed') ||
+    message.includes('network')
+  );
+}
+
+/**
+ * Returns true when a WorkIQ MCP failure is likely transient and worth retrying.
+ * Retries on timeout, broken stdio pipe, process-not-running, generic transport
+ * errors, and HTTP 429/503 echoed by WorkIQ. Authentication, EULA, and
+ * client-side parsing errors are NOT retryable.
+ */
+export function isRetryableWorkIQError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  if (message.includes('eula') || message.includes('unauthor') || message.includes('forbidden') || message.includes('401') || message.includes('403')) {
+    return false;
+  }
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('mcp process') ||
+    message.includes('process is not running') ||
+    message.includes('process exited') ||
+    message.includes('econnreset') ||
+    message.includes('epipe') ||
+    message.includes('etimedout') ||
+    message.includes('socket hang up') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('throttl') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('empty response')
+  );
+}
+
+/**
  * Create the configured LLM provider.
  */
 export function createLLMClient(options?: LLMClientOptions): LLMClient {
@@ -34,9 +131,25 @@ export function createLLMClient(options?: LLMClientOptions): LLMClient {
 
   switch (provider) {
     case 'm365-copilot':
-      return new WorkIQCopilotClient();
+      return new WorkIQCopilotClient({
+        timeoutMs: parseTimeoutMsEnv(),
+        maxAttempts: parsePositiveIntEnv('EVALGEN_LLM_MAX_ATTEMPTS', 3),
+        backoffBaseMs: parsePositiveIntEnv('EVALGEN_LLM_BACKOFF_MS', 2000),
+      });
     case 'm365-copilot-api':
-      return new Microsoft365CopilotChatClient(options);
+      return new Microsoft365CopilotChatClient({
+        ...options,
+        maxAttempts: parsePositiveIntEnv('EVALGEN_LLM_MAX_ATTEMPTS', 3),
+        backoffBaseMs: parsePositiveIntEnv('EVALGEN_LLM_BACKOFF_MS', 2000),
+      });
+    case 'workiq-a2a':
+      return new WorkIQA2AClient({
+        accessToken: process.env.EVALGEN_WORKIQ_TOKEN,
+        timeoutMs: parseTimeoutMsEnv(),
+        maxAttempts: parsePositiveIntEnv('EVALGEN_LLM_MAX_ATTEMPTS', 3),
+        backoffBaseMs: parsePositiveIntEnv('EVALGEN_LLM_BACKOFF_MS', 2000),
+        timeZone: options?.m365TimeZone,
+      });
     case 'azure-openai':
       return new AzureOpenAIClient(options);
     case 'github-copilot':
@@ -62,9 +175,13 @@ export class WorkIQCopilotClient implements LLMClient {
   private lineResolvers: Array<(line: string) => void> = [];
   private requestId = 0;
   private timeoutMs: number;
+  private maxAttempts: number;
+  private backoffBaseMs: number;
 
-  constructor(options?: { timeoutMs?: number }) {
+  constructor(options?: { timeoutMs?: number; maxAttempts?: number; backoffBaseMs?: number }) {
     this.timeoutMs = options?.timeoutMs ?? 300000;
+    this.maxAttempts = Math.max(1, options?.maxAttempts ?? 3);
+    this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? 2000);
   }
 
   async authenticate(): Promise<void> {
@@ -143,17 +260,35 @@ export class WorkIQCopilotClient implements LLMClient {
   }
 
   private async askRaw(question: string): Promise<string> {
-    await this.start();
-    const response = await this.callTool('ask_work_iq', { question });
-    const content = response.result?.content;
-    if (response.result?.isError) {
-      throw new Error(`WorkIQ tool error: ${content?.[0]?.text ?? 'unknown error'}`);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        await this.start();
+        const response = await this.callTool('ask_work_iq', { question });
+        const content = response.result?.content;
+        if (response.result?.isError) {
+          throw new Error(`WorkIQ tool error: ${content?.[0]?.text ?? 'unknown error'}`);
+        }
+        if (content && content.length > 0 && typeof content[0].text === 'string') {
+          return content[0].text;
+        }
+        throw new Error('WorkIQ returned an empty response');
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableWorkIQError(err) || attempt === this.maxAttempts) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(this.backoffBaseMs, attempt);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[eval-gen] WorkIQ MCP call failed (attempt ${attempt}/${this.maxAttempts}): ${message}. ` +
+          `Resetting MCP process and retrying in ${Math.round(delayMs)} ms.`,
+        );
+        this.close();
+        await sleep(delayMs);
+      }
     }
-    if (content && content.length > 0 && typeof content[0].text === 'string') {
-      return content[0].text;
-    }
-
-    throw new Error('WorkIQ returned an empty response');
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<any> {
@@ -216,6 +351,234 @@ export class WorkIQCopilotClient implements LLMClient {
 
     throw new Error(`Timed out waiting for WorkIQ MCP response (id=${expectedId})`);
   }
+}
+
+/**
+ * Microsoft Work IQ A2A (Agent-to-Agent) public preview API.
+ *
+ * Direct HTTPS replacement for the WorkIQ MCP transport. Calls the Work IQ
+ * Gateway at https://workiq.svc.cloud.microsoft/a2a/ using JSON-RPC 2.0 with
+ * the A2A v1.0 wire format. Same backend intelligence as WorkIQ MCP, but
+ * removes the stdio child process as a failure point.
+ *
+ * One-time admin setup (see the Work IQ API quickstart):
+ *   1. Create the Work IQ service principal (appId fdcc1f02-fc51-4226-8753-f668596af7f7)
+ *   2. Register a client app with delegated permission `WorkIQAgent.Ask`
+ *   3. Grant admin consent
+ *
+ * Authentication: a delegated bearer token issued for your registered app with
+ * audience `api://workiq.svc.cloud.microsoft` is required. Provide it via
+ * EVALGEN_WORKIQ_TOKEN. Tokens issued for the Azure CLI or other arbitrary
+ * first-party clients are rejected by the Work IQ Gateway.
+ *
+ * Reference: https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq-api-quickstart
+ */
+export class WorkIQA2AClient implements LLMClient {
+  private static readonly ENDPOINT = 'https://workiq.svc.cloud.microsoft/a2a/';
+
+  private accessToken: string;
+  private timeoutMs: number;
+  private maxAttempts: number;
+  private backoffBaseMs: number;
+  private timeZone: string;
+  private contextId?: string;
+
+  constructor(options?: {
+    accessToken?: string;
+    timeoutMs?: number;
+    maxAttempts?: number;
+    backoffBaseMs?: number;
+    timeZone?: string;
+  }) {
+    this.accessToken = options?.accessToken ?? process.env.EVALGEN_WORKIQ_TOKEN ?? '';
+    this.timeoutMs = options?.timeoutMs ?? 300000;
+    this.maxAttempts = Math.max(1, options?.maxAttempts ?? 3);
+    this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? 2000);
+    this.timeZone = options?.timeZone
+      ?? process.env.EVALGEN_M365_COPILOT_TIME_ZONE
+      ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+      ?? 'UTC';
+
+    if (!this.accessToken) {
+      throw new Error(
+        'Work IQ A2A requires a delegated bearer token. Set EVALGEN_WORKIQ_TOKEN to a JWT issued for your app ' +
+        'registration with the WorkIQAgent.Ask scope and audience api://workiq.svc.cloud.microsoft. ' +
+        'See https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq-api-quickstart for setup steps.',
+      );
+    }
+  }
+
+  async authenticate(): Promise<void> {
+    const reply = await this.sendMessage('Reply with exactly this JSON object and no extra text: {"ok":true}');
+    if (!reply.trim()) {
+      throw new Error('Work IQ A2A authentication preflight returned an empty response');
+    }
+  }
+
+  async generateStructured<T>(prompt: string, schemaDescription: string): Promise<T> {
+    const reply = await this.sendMessage(buildStructuredPrompt(prompt, schemaDescription));
+    return parseStructuredJson<T>(reply);
+  }
+
+  private async sendMessage(text: string): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        return await this.sendMessageOnce(text);
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableA2AError(err) || attempt === this.maxAttempts) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(this.backoffBaseMs, attempt);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[eval-gen] Work IQ A2A call failed (attempt ${attempt}/${this.maxAttempts}): ${message}. ` +
+          `Retrying in ${Math.round(delayMs)} ms.`,
+        );
+        await sleep(delayMs);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async sendMessageOnce(text: string): Promise<string> {
+    const requestId = randomGuid();
+    const messageId = randomGuid();
+    const message: Record<string, unknown> = {
+      role: 'ROLE_USER',
+      messageId,
+      parts: [{ text }],
+      metadata: {
+        Location: {
+          timeZone: this.timeZone,
+          timeZoneOffset: -new Date().getTimezoneOffset(),
+        },
+      },
+    };
+    if (this.contextId) {
+      message.contextId = this.contextId;
+    }
+
+    const body = {
+      jsonrpc: '2.0',
+      id: requestId,
+      method: 'SendMessage',
+      params: { message },
+    };
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(WorkIQA2AClient.ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'A2A-Version': '1.0',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') {
+        throw new Error(`Work IQ A2A request timed out after ${this.timeoutMs} ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new WorkIQA2AError(response.status, errorText);
+    }
+
+    const json = await response.json() as {
+      result?: {
+        task?: {
+          contextId?: string;
+          status?: { state?: string; message?: { parts?: Array<{ text?: string }> } };
+          artifacts?: Array<{ parts?: Array<{ text?: string }> }>;
+        };
+      };
+      error?: { code: number; message: string };
+    };
+
+    if (json.error) {
+      throw new WorkIQA2AError(0, `Work IQ A2A JSON-RPC error ${json.error.code}: ${json.error.message}`);
+    }
+
+    const task = json.result?.task;
+    if (!task) {
+      throw new Error('Work IQ A2A response is missing result.task');
+    }
+
+    if (task.contextId) {
+      this.contextId = task.contextId;
+    }
+
+    const state = task.status?.state;
+    if (state && state !== 'TASK_STATE_COMPLETED') {
+      const detail = task.status?.message?.parts?.find(p => p.text)?.text;
+      throw new Error(`Work IQ A2A task ended in state ${state}${detail ? `: ${detail}` : ''}`);
+    }
+
+    const artifactText = task.artifacts
+      ?.flatMap(a => a.parts ?? [])
+      .find(p => p && typeof p.text === 'string')
+      ?.text;
+    if (!artifactText) {
+      throw new Error('Work IQ A2A task completed but contained no text artifact');
+    }
+    return artifactText;
+  }
+}
+
+class WorkIQA2AError extends Error {
+  constructor(public readonly status: number, public readonly responseBody: string) {
+    super(status > 0
+      ? `Work IQ A2A HTTP ${status}: ${responseBody}`
+      : responseBody);
+  }
+}
+
+/**
+ * Returns true when a Work IQ A2A failure is likely transient.
+ * Retries on 408/429/5xx, network errors, request timeouts, and transient
+ * task-state failures. 4xx (other than 408/429) are NOT retryable — those
+ * indicate auth, scope, or input problems.
+ */
+export function isRetryableA2AError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err instanceof WorkIQA2AError) {
+    if (err.status === 0) return false;
+    return err.status === 408 || err.status === 429 || (err.status >= 500 && err.status <= 599);
+  }
+  const message = err.message.toLowerCase();
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('econnreset') ||
+    message.includes('epipe') ||
+    message.includes('etimedout') ||
+    message.includes('socket hang up') ||
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('missing result.task') ||
+    message.includes('no text artifact')
+  );
+}
+
+function randomGuid(): string {
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
@@ -305,6 +668,8 @@ export class Microsoft365CopilotChatClient implements LLMClient {
   private readonly hasProvidedAccessToken: boolean;
   private tenantId?: string;
   private timeZone: string;
+  private maxAttempts: number;
+  private backoffBaseMs: number;
 
   constructor(options?: LLMClientOptions) {
     this.accessToken = options?.m365AccessToken ?? process.env.EVALGEN_M365_COPILOT_TOKEN ?? '';
@@ -314,6 +679,8 @@ export class Microsoft365CopilotChatClient implements LLMClient {
       ?? process.env.EVALGEN_M365_COPILOT_TIME_ZONE
       ?? Intl.DateTimeFormat().resolvedOptions().timeZone
       ?? 'UTC';
+    this.maxAttempts = Math.max(1, options?.maxAttempts ?? 3);
+    this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? 2000);
   }
 
   async authenticate(): Promise<void> {
@@ -321,34 +688,52 @@ export class Microsoft365CopilotChatClient implements LLMClient {
   }
 
   async generateStructured<T>(prompt: string, schemaDescription: string): Promise<T> {
-    const conversation = await this.createConversationWithRetry('conversation creation');
-    if (!conversation.id) {
-      throw new Error('Microsoft 365 Copilot Chat API did not return a conversation id');
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        const conversation = await this.createConversationWithRetry('conversation creation');
+        if (!conversation.id) {
+          throw new Error('Microsoft 365 Copilot Chat API did not return a conversation id');
+        }
+
+        const token = await this.getAccessToken();
+        const response = await graphFetch<{
+          messages?: Array<{ text?: string }>;
+        }>(
+          `https://graph.microsoft.com/beta/copilot/conversations/${conversation.id}/chat`,
+          token,
+          {
+            message: {
+              text: buildStructuredPrompt(prompt, schemaDescription),
+            },
+            locationHint: {
+              timeZone: this.timeZone,
+            },
+          },
+          200,
+        );
+
+        const content = [...(response.messages ?? [])].reverse().find(m => m.text)?.text;
+        if (!content) {
+          throw new Error('Microsoft 365 Copilot Chat API returned no message text');
+        }
+
+        return parseStructuredJson<T>(content);
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableCopilotApiError(err) || attempt === this.maxAttempts) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(this.backoffBaseMs, attempt);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[eval-gen] M365 Copilot Chat API call failed (attempt ${attempt}/${this.maxAttempts}): ${message}. ` +
+          `Retrying in ${Math.round(delayMs)} ms.`,
+        );
+        await sleep(delayMs);
+      }
     }
-
-    const token = await this.getAccessToken();
-    const response = await graphFetch<{
-      messages?: Array<{ text?: string }>;
-    }>(
-      `https://graph.microsoft.com/beta/copilot/conversations/${conversation.id}/chat`,
-      token,
-      {
-        message: {
-          text: buildStructuredPrompt(prompt, schemaDescription),
-        },
-        locationHint: {
-          timeZone: this.timeZone,
-        },
-      },
-      200,
-    );
-
-    const content = [...(response.messages ?? [])].reverse().find(m => m.text)?.text;
-    if (!content) {
-      throw new Error('Microsoft 365 Copilot Chat API returned no message text');
-    }
-
-    return parseStructuredJson<T>(content);
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   private async createConversationWithRetry(operation: string): Promise<{ id?: string }> {

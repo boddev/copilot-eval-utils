@@ -81,6 +81,8 @@ export interface GeneratedEvalItem {
   difficulty: 'easy' | 'medium' | 'hard';
   supporting_facts: string[];
   grounding_confidence: 'high' | 'medium' | 'low';
+  /** All distinct row references the question grounds in (primary + supporting). Used for coverage. */
+  referenced_rows?: string[];
 }
 
 /** Complete generated evaluation set */
@@ -108,6 +110,8 @@ export interface QuestionIntent {
   difficulty: 'easy' | 'medium' | 'hard';
   target_fields: string[];
   target_row_references: string[];
+  /** Pre-assigned primary row reference (set by orchestrator before LLM draft) */
+  assigned_primary_row?: string;
 }
 
 /** LLM-generated question with grounding info */
@@ -119,6 +123,12 @@ export interface DraftedQuestion {
   expected_answer: string;
   supporting_facts: string[];
   source_location: string;
+  /** Fact IDs the LLM cited as evidence (preferred; falsy if model didn't return them) */
+  supporting_fact_ids?: string[];
+  /** Distinct row references actually used as evidence (resolved from supporting_fact_ids or back-matched) */
+  referenced_rows?: string[];
+  /** Pre-assigned primary row reference (carried from intent) */
+  assigned_primary_row?: string;
 }
 
 /** Validation result for a generated eval set */
@@ -129,10 +139,20 @@ export interface ValidationResult {
   categoryBalance: Record<QuestionCategory, number>;
   coverageScore: number;
   issues: string[];
+  /** Distinct source rows referenced across the eval set */
+  uniqueRowsReferenced?: number;
+  /** Total source rows in the dataset */
+  totalRows?: number;
+  /** Max coverage realistically achievable with this item count (~3 rows touched per question) */
+  realisticMaxCoverage?: number;
+  /** Question count that would be needed to hit the coverage target on this dataset */
+  recommendedCountForTarget?: number;
+  /** Whether the dataset is large enough that exhaustive coverage isn't practical */
+  datasetSampledNotExhaustive?: boolean;
 }
 
 /** CLI options */
-export type LLMProvider = 'm365-copilot' | 'm365-copilot-api' | 'azure-openai' | 'github-copilot' | 'command';
+export type LLMProvider = 'm365-copilot' | 'm365-copilot-api' | 'workiq-a2a' | 'azure-openai' | 'github-copilot' | 'command';
 
 export interface CliOptions {
   file: string;
