@@ -23,9 +23,12 @@ const elements = {
   connectorSchema: document.getElementById('connectorSchema'),
   generateButton: document.getElementById('generateButton'),
   progressPanel: document.getElementById('progressPanel'),
+  progressBar: document.getElementById('progressBar'),
   progressMessage: document.getElementById('progressMessage'),
   logOutput: document.getElementById('logOutput'),
   fileLinks: document.getElementById('fileLinks'),
+  viewReview: document.getElementById('viewReview'),
+  viewCsv: document.getElementById('viewCsv'),
   downloadCsv: document.getElementById('downloadCsv'),
   downloadReview: document.getElementById('downloadReview'),
   openFolderButton: document.getElementById('openFolderButton'),
@@ -78,6 +81,12 @@ function setFiles(files) {
 function showProgress(message) {
   elements.progressPanel.classList.remove('hidden');
   elements.progressMessage.textContent = message;
+  setProgressState('running');
+}
+
+function setProgressState(status) {
+  elements.progressBar.classList.remove('is-running', 'is-complete', 'is-failed');
+  elements.progressBar.classList.add(`is-${status}`);
 }
 
 function appendLog(message) {
@@ -93,6 +102,8 @@ function setDirty(dirty) {
 function updateJobLinks() {
   if (!state.job) return;
   elements.fileLinks.classList.remove('hidden');
+  elements.viewReview.href = `/api/jobs/${state.job.id}/view/review`;
+  elements.viewCsv.href = `/api/jobs/${state.job.id}/view/csv`;
   elements.downloadCsv.href = `/api/jobs/${state.job.id}/files/csv`;
   elements.downloadReview.href = `/api/jobs/${state.job.id}/files/review`;
 }
@@ -108,6 +119,12 @@ function connectEvents(jobId) {
     const { status, phase } = payload.data;
     elements.progressMessage.textContent = payload.message;
     state.job = { ...state.job, status, phase };
+    const progressState = status === 'failed'
+      ? 'failed'
+      : status === 'generated' || status === 'scored'
+        ? 'complete'
+        : 'running';
+    setProgressState(progressState);
 
     if (status === 'generated') {
       elements.generateButton.disabled = false;
@@ -180,6 +197,7 @@ async function startGenerate() {
   elements.reviewPanel.classList.add('hidden');
   elements.scorePanel.classList.add('hidden');
   elements.scoreResults.classList.add('hidden');
+  elements.fileLinks.classList.add('hidden');
   showProgress('Uploading dataset...');
 
   try {
@@ -193,6 +211,7 @@ async function startGenerate() {
   } catch (error) {
     elements.generateButton.disabled = false;
     elements.progressMessage.textContent = error.message;
+    setProgressState('failed');
     appendLog(`ERROR: ${error.message}`);
   }
 }
@@ -280,6 +299,7 @@ async function startScore() {
     appendLog('Scoring started.');
   } catch (error) {
     elements.scoreButton.disabled = false;
+    setProgressState('failed');
     appendLog(`ERROR: ${error.message}`);
   }
 }
@@ -291,6 +311,8 @@ function showScoreResults() {
     <strong>Scoring complete.</strong>
     <p>${state.job.summary?.scoredRows || 0} row(s) were written to the scored results file.</p>
     <div class="button-row">
+      <a class="button secondary" href="/api/jobs/${state.job.id}/view/report" target="_blank" rel="noopener">View report</a>
+      <a class="button secondary" href="/api/jobs/${state.job.id}/view/scoredCsv" target="_blank" rel="noopener">View scored CSV</a>
       <a class="button secondary" href="/api/jobs/${state.job.id}/files/scoredCsv">Download scored CSV</a>
       <a class="button secondary" href="/api/jobs/${state.job.id}/files/report">Download report</a>
     </div>

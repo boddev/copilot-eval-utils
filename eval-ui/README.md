@@ -20,7 +20,8 @@ The starter lives in the project root. It checks for Node.js, installs the small
 2. Describe the data in plain language.
 3. Generate the evaluation set and watch progress in the UI.
 4. Review and edit the generated prompts, expected answers, and source locations.
-5. Optionally run EvalScore and download the scored CSV and report.
+5. Open the generated review notes or CSV in the browser, download them, or open the output folder.
+6. Optionally run EvalScore and view or download the scored CSV and report.
 
 Each run is saved under:
 
@@ -29,6 +30,26 @@ eval-ui\workspace\jobs
 ```
 
 The UI server only listens on `127.0.0.1`, so it is available from the local computer only.
+
+## Packaging
+
+The project-root `Start Eval UI.cmd` launcher remains available for source checkouts where Node.js is installed.
+
+To build click-to-launch Windows artifacts that bundle the local UI shell and the EvalGen/EvalScore tool assets:
+
+```text
+cd eval-ui
+npm install
+npm run package:win
+```
+
+The generated artifacts are written under:
+
+```text
+eval-ui\dist
+```
+
+The Windows package includes both an installer and a portable executable. The packaged app starts the local Eval UI server on `127.0.0.1`, opens it in an Electron window, and stores user-generated job output under the app user-data folder instead of writing into the installed application directory. EvalGen and EvalScore are bundled with the app; external authentication and WorkIQ access still depend on the user's local environment.
 
 ## WorkIQ timeout reliability
 

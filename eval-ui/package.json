@@ -3,10 +3,67 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local browser UI for generating, reviewing, and scoring Copilot evaluation sets.",
+  "main": "electron-main.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "electron:start": "electron .",
+    "prepare:tools": "npm install --prefix ..\\eval-gen && npm run build --prefix ..\\eval-gen && npm prune --omit=dev --prefix ..\\eval-gen && npm install --prefix ..\\eval-score\\node && npm run build --prefix ..\\eval-score\\node && npm prune --omit=dev --prefix ..\\eval-score\\node",
+    "package:win": "npm run prepare:tools && electron-builder --win nsis portable"
   },
   "dependencies": {
     "busboy": "^1.6.0"
+  },
+  "devDependencies": {
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.github.boddev.evaluationcli.evalui",
+    "productName": "Eval UI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron-main.js",
+      "server.js",
+      "public/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../eval-gen",
+        "to": "eval-gen",
+        "filter": [
+          "dist/**/*",
+          "package.json",
+          "node_modules/**/*"
+        ]
+      },
+      {
+        "from": "../eval-score/node",
+        "to": "eval-score/node",
+        "filter": [
+          "dist/**/*",
+          "package.json",
+          "node_modules/**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+    }
   }
 }

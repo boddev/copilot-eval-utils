@@ -14,11 +14,15 @@ const HOST = '127.0.0.1';
 const DEFAULT_PORT = Number(process.env.EVAL_UI_PORT || 3858);
 const MAX_PORT_ATTEMPTS = 10;
 const repoRoot = path.resolve(__dirname, '..');
+const toolsRoot = path.resolve(process.env.EVAL_UI_TOOLS_ROOT || repoRoot);
 const publicDir = path.join(__dirname, 'public');
-const workspaceDir = path.join(__dirname, 'workspace');
+const workspaceDir = path.resolve(process.env.EVAL_UI_WORKSPACE_DIR || path.join(__dirname, 'workspace'));
 const jobsDir = path.join(workspaceDir, 'jobs');
-const runtimeDir = path.join(__dirname, '.runtime');
+const runtimeDir = path.resolve(process.env.EVAL_UI_RUNTIME_DIR || path.join(__dirname, '.runtime'));
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const nodeCommand = process.execPath;
+const isElectronRuntime = Boolean(process.versions && process.versions.electron);
+const isPackagedApp = process.env.EVAL_UI_PACKAGED === '1';
 const activeJobs = new Map();
 let serverPort = DEFAULT_PORT;
 const setupPromises = new Map();
@@ -313,15 +317,15 @@ function normalizeList(value) {
 
 function toolPaths() {
   return {
-    evalGenDir: path.join(repoRoot, 'eval-gen'),
-    evalGenJs: path.join(repoRoot, 'eval-gen', 'dist', 'index.js'),
-    evalScoreDir: path.join(repoRoot, 'eval-score', 'node'),
-    evalScoreJs: path.join(repoRoot, 'eval-score', 'node', 'dist', 'index.js'),
+    evalGenDir: path.join(toolsRoot, 'eval-gen'),
+    evalGenJs: path.join(toolsRoot, 'eval-gen', 'dist', 'index.js'),
+    evalScoreDir: path.join(toolsRoot, 'eval-score', 'node'),
+    evalScoreJs: path.join(toolsRoot, 'eval-score', 'node', 'dist', 'index.js'),
   };
 }
 
-function childEnvironment() {
-  return {
+function childEnvironment(runAsNode = false) {
+  const env = {
     ...process.env,
     EVALGEN_LLM_TIMEOUT_MS: process.env.EVALGEN_LLM_TIMEOUT_MS || '600000',
     EVALGEN_LLM_MAX_ATTEMPTS: process.env.EVALGEN_LLM_MAX_ATTEMPTS || '5',
@@ -330,6 +334,12 @@ function childEnvironment() {
     EVALSCORE_WORKIQ_MAX_ATTEMPTS: process.env.EVALSCORE_WORKIQ_MAX_ATTEMPTS || '5',
     EVALSCORE_WORKIQ_BACKOFF_MS: process.env.EVALSCORE_WORKIQ_BACKOFF_MS || '5000',
   };
+  if (runAsNode) {
+    env.ELECTRON_RUN_AS_NODE = '1';
+  } else {
+    delete env.ELECTRON_RUN_AS_NODE;
+  }
+  return env;
 }
 
 function runCommand(job, label, command, args, options = {}) {
@@ -337,15 +347,15 @@ function runCommand(job, label, command, args, options = {}) {
     emit(job, 'log', `\n${label}`);
     emit(job, 'log', `> ${command} ${args.join(' ')}`);
     const child = childProcess.spawn(command, args, {
-      cwd: options.cwd || repoRoot,
-      env: childEnvironment(),
+      cwd: options.cwd || toolsRoot,
+      env: childEnvironment(options.runAsNode),
       windowsHide: true,
       shell: false,
     });
     job.activeChild = child;
 
-    child.stdout.on('data', (chunk) => emit(job, 'log', chunk.toString()));
-    child.stderr.on('data', (chunk) => emit(job, 'log', chunk.toString()));
+    if (child.stdout) child.stdout.on('data', (chunk) => emit(job, 'log', chunk.toString()));
+    if (child.stderr) child.stderr.on('data', (chunk) => emit(job, 'log', chunk.toString()));
     child.on('error', (error) => {
       job.activeChild = null;
       reject(error);
@@ -376,6 +386,9 @@ async function ensureTool(job, tool) {
         emit(job, 'log', 'EvalGen is already built.');
         return;
       }
+      if (isPackagedApp) {
+        throw new Error(`The packaged Eval UI is missing EvalGen at ${paths.evalGenJs}. Rebuild the executable artifact.`);
+      }
       setJobStatus(job, job.status, 'setup', 'Preparing EvalGen. This can take a few minutes the first time.');
       await runCommand(job, 'Installing EvalGen dependencies...', npmCommand, ['install', '--prefix', paths.evalGenDir]);
       await runCommand(job, 'Building EvalGen...', npmCommand, ['run', 'build', '--prefix', paths.evalGenDir]);
@@ -386,6 +399,9 @@ async function ensureTool(job, tool) {
       if (fs.existsSync(paths.evalScoreJs)) {
         emit(job, 'log', 'EvalScore is already built.');
         return;
+      }
+      if (isPackagedApp) {
+        throw new Error(`The packaged Eval UI is missing EvalScore at ${paths.evalScoreJs}. Rebuild the executable artifact.`);
       }
       setJobStatus(job, job.status, 'setup', 'Preparing EvalScore. This can take a few minutes the first time.');
       await runCommand(job, 'Installing EvalScore dependencies...', npmCommand, ['install', '--prefix', paths.evalScoreDir]);
@@ -509,7 +525,7 @@ async function runGenerate(job) {
   }
 
   setJobStatus(job, 'running', 'generate', 'Generating evaluation questions and expected answers...');
-  await runCommand(job, 'Running EvalGen...', process.execPath, args);
+  await runCommand(job, 'Running EvalGen...', nodeCommand, args, { runAsNode: isElectronRuntime });
 
   const rows = fs.existsSync(outputCsv) ? parseCsv(fs.readFileSync(outputCsv, 'utf8')).rows : [];
   job.summary.generatedRows = rows.length;
@@ -662,7 +678,7 @@ async function runScore(job, settings) {
   }
 
   setJobStatus(job, 'running', 'score', 'Running EvalScore against Microsoft 365 Copilot / WorkIQ...');
-  await runCommand(job, 'Running EvalScore...', process.execPath, args, { acceptedCodes: [0, 1] });
+  await runCommand(job, 'Running EvalScore...', nodeCommand, args, { acceptedCodes: [0, 1], runAsNode: isElectronRuntime });
 
   const basename = path.basename(job.paths.outputCsv, path.extname(job.paths.outputCsv));
   job.paths.scoredCsv = path.join(job.paths.scoreOutputDir, `${basename}-results.csv`);
@@ -693,6 +709,23 @@ function sendDownload(res, filePath) {
   res.writeHead(200, {
     'Content-Type': 'application/octet-stream',
     'Content-Disposition': `attachment; filename="${path.basename(filePath).replace(/"/g, '')}"`,
+  });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function contentTypeFor(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.csv') return 'text/csv; charset=utf-8';
+  if (extension === '.md') return 'text/plain; charset=utf-8';
+  if (extension === '.json') return 'application/json; charset=utf-8';
+  return 'text/plain; charset=utf-8';
+}
+
+function sendInlineFile(res, filePath) {
+  res.writeHead(200, {
+    'Content-Type': contentTypeFor(filePath),
+    'Content-Disposition': `inline; filename="${path.basename(filePath).replace(/"/g, '')}"`,
+    'X-Content-Type-Options': 'nosniff',
   });
   fs.createReadStream(filePath).pipe(res);
 }
@@ -861,6 +894,16 @@ async function routeApi(req, res, pathname) {
     return true;
   }
 
+  if (req.method === 'GET' && action === 'view' && subAction) {
+    const target = fileFor(job, subAction);
+    if (!target) {
+      sendError(res, 404, 'Requested file is not available yet.');
+      return true;
+    }
+    sendInlineFile(res, target);
+    return true;
+  }
+
   sendError(res, 404, 'API endpoint was not found.');
   return true;
 }
@@ -879,43 +922,83 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-function listenWithFallback(port, attemptsRemaining) {
-  server.once('error', (error) => {
-    if (error.code === 'EADDRINUSE' && attemptsRemaining > 1) {
-      listenWithFallback(port + 1, attemptsRemaining - 1);
-      return;
-    }
-    console.error(`Eval UI could not start: ${error.message}`);
-    process.exit(1);
-  });
+function listenWithFallback(port, attemptsRemaining, options = {}) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      if (error.code === 'EADDRINUSE' && attemptsRemaining > 1) {
+        listenWithFallback(port + 1, attemptsRemaining - 1, options).then(resolve, reject);
+        return;
+      }
+      console.error(`Eval UI could not start: ${error.message}`);
+      if (options.exitOnError) {
+        process.exit(1);
+      }
+      reject(error);
+    };
 
-  server.listen(port, HOST, () => {
-    serverPort = port;
-    const url = `http://${HOST}:${serverPort}`;
-    fs.writeFileSync(path.join(runtimeDir, 'port.json'), JSON.stringify({ url, port: serverPort, startedAt: nowIso() }, null, 2));
-    console.log(`Eval UI is running at ${url}`);
-    console.log('Keep this window open while you use the UI.');
-    if (process.argv.includes('--open')) {
-      openUrl(url);
-    }
+    server.once('error', onError);
+    server.listen(port, HOST, () => {
+      server.off('error', onError);
+      const address = server.address();
+      serverPort = typeof address === 'object' && address ? address.port : port;
+      const url = `http://${HOST}:${serverPort}`;
+      fs.writeFileSync(path.join(runtimeDir, 'port.json'), JSON.stringify({ url, port: serverPort, startedAt: nowIso() }, null, 2));
+      console.log(`Eval UI is running at ${url}`);
+      console.log('Keep this window open while you use the UI.');
+      if (options.open) {
+        openUrl(url);
+      }
+      resolve({ url, port: serverPort, server });
+    });
   });
 }
 
-async function start() {
-  if (process.argv.includes('--open')) {
+function stop() {
+  for (const job of activeJobs.values()) {
+    if (job.activeChild && !job.activeChild.killed) {
+      job.activeChild.kill();
+      job.activeChild = null;
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function start(options = {}) {
+  const open = options.open ?? process.argv.includes('--open');
+  const port = options.port ?? DEFAULT_PORT;
+  const attempts = port === 0 ? 1 : MAX_PORT_ATTEMPTS;
+
+  if (open) {
     const existingUrl = await findExistingServer();
     if (existingUrl) {
       console.log(`Eval UI is already running at ${existingUrl}`);
       openUrl(existingUrl);
-      return;
+      return { url: existingUrl, port: new URL(existingUrl).port, server };
     }
   }
 
   loadJobs();
-  listenWithFallback(DEFAULT_PORT, MAX_PORT_ATTEMPTS);
+  return listenWithFallback(port, attempts, { open, exitOnError: options.exitOnError ?? require.main === module });
 }
 
-start().catch((error) => {
-  console.error(`Eval UI could not start: ${error.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  start().catch((error) => {
+    console.error(`Eval UI could not start: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { start, stop, server };

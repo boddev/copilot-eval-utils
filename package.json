@@ -15,6 +15,7 @@
     "install:tools": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-tools.ps1",
     "uninstall:tools": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\uninstall-tools.ps1",
     "link:tools": "npm run install:tools",
+    "package:eval-ui": "npm install --prefix eval-ui && npm run package:win --prefix eval-ui",
     "eval:environment": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run-environment-eval.ps1",
     "eval:environment:m365": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run-environment-m365-copilot-eval.ps1",
     "convert:evalgen:m365": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\convert-evalgen-to-m365-copilot-eval.ps1"
