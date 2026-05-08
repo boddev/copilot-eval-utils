@@ -1,0 +1,84 @@
+name: Build Eval UI Windows release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and publish Eval UI executables
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            eval-ui/package-lock.json
+            eval-gen/package-lock.json
+            eval-score/node/package-lock.json
+
+      - name: Install Eval UI dependencies
+        run: npm ci --prefix eval-ui
+
+      - name: Build Windows executables
+        run: npm run package:win --prefix eval-ui
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-ui-windows-${{ github.sha }}
+          path: |
+            eval-ui/dist/*.exe
+            eval-ui/dist/*.blockmap
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $tag = "eval-ui-$shortSha"
+          $title = "Eval UI Windows build $shortSha"
+          $assets = @(Get-ChildItem -Path 'eval-ui/dist/*.exe','eval-ui/dist/*.blockmap' -File |
+            ForEach-Object { $_.FullName })
+          if ($assets.Count -eq 0) {
+            throw 'No Eval UI executable artifacts were found in eval-ui/dist.'
+          }
+          $notes = @"
+          Automated Eval UI Windows build for commit ${{ github.sha }}.
+
+          Download either:
+          - Eval UI setup executable for an installer-based install.
+          - Eval UI portable executable for click-to-launch use without installing.
+          "@
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $tag --cleanup-tag --yes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to replace existing GitHub release $tag."
+            }
+          }
+
+          & gh release create $tag `
+            --target '${{ github.sha }}' `
+            --title $title `
+            --notes $notes `
+            --latest `
+            @assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create GitHub release $tag."
+          }

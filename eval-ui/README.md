@@ -51,6 +51,20 @@ eval-ui\dist
 
 The Windows package includes both an installer and a portable executable. The packaged app starts the local Eval UI server on `127.0.0.1`, opens it in an Electron window, and stores user-generated job output under the app user-data folder instead of writing into the installed application directory. EvalGen and EvalScore are bundled with the app; external authentication and WorkIQ access still depend on the user's local environment.
 
+### What each GitHub release means
+
+On every push to `main`, the `Build Eval UI Windows release` GitHub Actions workflow rebuilds the Windows executable artifacts and publishes them to a GitHub Release tagged as `eval-ui-<short-commit-sha>`. Each release is a snapshot of the Eval UI application at that exact commit, not a manually curated product version.
+
+Release assets:
+
+| Asset | Meaning | Use when |
+| --- | --- | --- |
+| `Eval UI-<version>-setup-x64.exe` | Windows installer for the Eval UI desktop app. | You want the app installed like a normal Windows application. |
+| `Eval UI-<version>-portable-x64.exe` | Standalone portable executable. | You want to download and run the UI without installing it. |
+| `Eval UI-<version>-setup-x64.exe.blockmap` | Electron updater metadata for the installer artifact. | Usually only automation needs this; most users can ignore it. |
+
+The most recent release is marked as the latest build from `main`. Older releases remain useful for tracing which executable came from a specific commit.
+
 ## WorkIQ timeout reliability
 
 EvalGen and EvalScore call WorkIQ / Microsoft 365 Copilot many times during a run. The UI gives those calls longer defaults than the command line and retries transient MCP failures:

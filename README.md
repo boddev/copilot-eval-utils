@@ -116,6 +116,8 @@ uninstall-tools.cmd -CleanLocal
 
 For a guided browser experience, double-click `Start Eval UI.cmd` from the project root. It starts the local Eval UI app and opens a browser for dataset selection, eval generation, review/editing, and optional scoring.
 
+For a downloaded desktop build, use the GitHub Releases page. Each `eval-ui-<short-commit-sha>` release is an automated Windows build from that exact `main` commit. Download `Eval UI-<version>-setup-x64.exe` for an installer, or `Eval UI-<version>-portable-x64.exe` to run without installing; `.blockmap` files are updater metadata and can usually be ignored.
+
 Generate an eval set from the full environment dataset:
 
 ```powershell
