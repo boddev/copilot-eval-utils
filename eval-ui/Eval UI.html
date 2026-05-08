@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open Eval UI</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f5f7fb;
+      color: #172033;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    main {
+      width: min(760px, calc(100% - 32px));
+      margin: 72px auto;
+      padding: 32px;
+      border: 1px solid #d7deea;
+      border-radius: 24px;
+      background: #fff;
+      box-shadow: 0 18px 55px rgba(34, 45, 73, 0.10);
+    }
+    h1 { margin-top: 0; }
+    .button {
+      display: inline-flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 0 18px;
+      background: #2657d9;
+      color: white;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .note {
+      margin-top: 18px;
+      padding: 14px;
+      border-radius: 14px;
+      background: #eff6ff;
+    }
+    code { font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Opening Eval UI...</h1>
+    <p id="status">Looking for the local Eval UI app.</p>
+    <p>If the app does not open automatically, double-click <strong>Start Eval UI.cmd</strong> in the project root folder. It will install anything missing, start the local app, and open your browser.</p>
+    <p><a class="button" href="../Start%20Eval%20UI.cmd">Open starter</a></p>
+    <div class="note">
+      Modern browsers do not allow an HTML file to start local programs automatically. The starter file handles that safely on your computer.
+    </div>
+  </main>
+  <script>
+    const status = document.getElementById('status');
+    const ports = Array.from({ length: 10 }, (_, index) => 3858 + index);
+
+    async function findApp() {
+      for (const port of ports) {
+        const url = `http://127.0.0.1:${port}/api/health`;
+        try {
+          const response = await fetch(url, { cache: 'no-store' });
+          if (response.ok) {
+            window.location.href = `http://127.0.0.1:${port}/`;
+            return;
+          }
+        } catch {
+          // Keep trying the next local port.
+        }
+      }
+      status.textContent = 'The local app is not running yet.';
+    }
+
+    findApp();
+  </script>
+</body>
+</html>

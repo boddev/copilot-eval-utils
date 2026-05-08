@@ -1,0 +1,12 @@
+{
+  "name": "eval-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local browser UI for generating, reviewing, and scoring Copilot evaluation sets.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0"
+  }
+}

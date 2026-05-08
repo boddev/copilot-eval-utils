@@ -2,6 +2,57 @@ import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 
+function parsePositiveIntEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function parseTimeoutMsEnv(): number {
+  return parsePositiveIntEnv(
+    'EVALSCORE_WORKIQ_TIMEOUT_MS',
+    parsePositiveIntEnv('EVALGEN_LLM_TIMEOUT_MS', 300000),
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeBackoffMs(baseMs: number, attempt: number): number {
+  const exponential = baseMs * Math.pow(2, attempt - 1);
+  const jitter = Math.random() * baseMs;
+  return exponential + jitter;
+}
+
+export function isRetryableWorkIQError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  if (message.includes('eula') || message.includes('unauthor') || message.includes('forbidden') || message.includes('401') || message.includes('403')) {
+    return false;
+  }
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('mcp process') ||
+    message.includes('process is not running') ||
+    message.includes('process exited') ||
+    message.includes('econnreset') ||
+    message.includes('epipe') ||
+    message.includes('etimedout') ||
+    message.includes('socket hang up') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('throttl') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('empty response')
+  );
+}
+
 /**
  * Interface for querying WorkIQ (or any LLM backend).
  * The workiq CLI provides the real implementation;
@@ -65,15 +116,43 @@ export class CliWorkIQClient implements WorkIQClient {
   private requestId = 0;
   private tenantId?: string;
   private timeoutMs: number;
+  private maxAttempts: number;
+  private backoffBaseMs: number;
 
-  constructor(options?: { timeoutMs?: number }) {
-    this.timeoutMs = options?.timeoutMs ?? 300000;
+  constructor(options?: { timeoutMs?: number; maxAttempts?: number; backoffBaseMs?: number }) {
+    this.timeoutMs = options?.timeoutMs ?? parseTimeoutMsEnv();
+    this.maxAttempts = Math.max(1, options?.maxAttempts ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_MAX_ATTEMPTS', 3));
+    this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_BACKOFF_MS', 2000));
   }
 
   async start(tenantId?: string): Promise<void> {
     if (this.process && !this.process.killed) return;
 
     this.tenantId = tenantId;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        await this.startOnce();
+        return;
+      } catch (err) {
+        lastError = err;
+        this.stop();
+        if (!isRetryableWorkIQError(err) || attempt === this.maxAttempts) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(this.backoffBaseMs, attempt);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[eval-score] WorkIQ MCP startup failed (attempt ${attempt}/${this.maxAttempts}): ${message}. ` +
+          `Resetting MCP process and retrying in ${Math.round(delayMs)} ms.`,
+        );
+        await sleep(delayMs);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async startOnce(): Promise<void> {
     // Note: -t (tenant) flag is NOT passed to MCP mode — it causes
     // ask_work_iq to fail. MCP handles tenant resolution internally.
     const args = ['mcp'];
@@ -151,10 +230,33 @@ export class CliWorkIQClient implements WorkIQClient {
   }
 
   async ask(question: string, tenantId?: string): Promise<string> {
-    if (!this.process || this.process.killed) {
-      await this.start(tenantId ?? this.tenantId);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      try {
+        if (!this.process || this.process.killed) {
+          await this.start(tenantId ?? this.tenantId);
+        }
+        return await this.askOnce(question);
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableWorkIQError(err) || attempt === this.maxAttempts) {
+          throw err;
+        }
+        const delayMs = computeBackoffMs(this.backoffBaseMs, attempt);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[eval-score] WorkIQ MCP call failed (attempt ${attempt}/${this.maxAttempts}): ${message}. ` +
+          `Resetting MCP process and retrying in ${Math.round(delayMs)} ms.`,
+        );
+        this.stop();
+        await sleep(delayMs);
+      }
     }
 
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async askOnce(question: string): Promise<string> {
     const id = ++this.requestId;
     const request = JSON.stringify({
       jsonrpc: '2.0',

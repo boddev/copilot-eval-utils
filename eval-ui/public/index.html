@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eval UI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Copilot Evaluation Toolkit</p>
+      <h1>Create, review, and score evaluation sets</h1>
+      <p class="hero-text">A guided workflow for turning source data into business-readable evaluation questions, then scoring the answers when you are ready.</p>
+    </div>
+    <div class="status-card">
+      <span id="connectionStatus" class="pill pill-good">Connected</span>
+      <p id="workspaceText">Local workspace ready.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="step-heading">
+        <span class="step-number">1</span>
+        <div>
+          <h2>Choose your dataset</h2>
+          <p>Select a file or an entire folder. The UI copies it into a local workspace before EvalGen runs.</p>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <button id="chooseFilesButton" type="button">Browse files</button>
+        <button id="chooseFolderButton" type="button" class="secondary">Browse folder</button>
+      </div>
+      <input id="fileInput" type="file" multiple hidden>
+      <input id="folderInput" type="file" webkitdirectory directory multiple hidden>
+      <div id="selectedFiles" class="file-summary empty">No dataset selected yet.</div>
+    </section>
+
+    <section class="panel">
+      <div class="step-heading">
+        <span class="step-number">2</span>
+        <div>
+          <h2>Describe the data</h2>
+          <p>Use plain business language. This helps the generator create useful, grounded questions.</p>
+        </div>
+      </div>
+
+      <label for="description">Dataset description</label>
+      <textarea id="description" rows="4" placeholder="Example: Environmental datasets with country, year, CO2 emissions, greenhouse gas metrics, and World Bank climate indicators."></textarea>
+
+      <div class="grid two">
+        <div>
+          <label for="count">Number of evaluations</label>
+          <input id="count" type="number" min="10" max="50" value="30">
+        </div>
+        <div>
+          <label for="extensions">File types to include</label>
+          <input id="extensions" type="text" value="csv,json,jsonl,xlsx,xls,tsv,docx,pdf,pptx,txt,md">
+        </div>
+      </div>
+
+      <details class="advanced">
+        <summary>Advanced options</summary>
+        <div class="grid two">
+          <div>
+            <label for="provider">Generation provider</label>
+            <select id="provider">
+              <option value="m365-copilot">Microsoft 365 Copilot / WorkIQ</option>
+              <option value="github-copilot">GitHub Copilot CLI</option>
+              <option value="azure-openai">Azure OpenAI</option>
+              <option value="command">Custom command</option>
+            </select>
+          </div>
+          <div>
+            <label for="model">Model or deployment name</label>
+            <input id="model" type="text" placeholder="Optional">
+          </div>
+          <div>
+            <label for="m365Tenant">Microsoft 365 tenant ID</label>
+            <input id="m365Tenant" type="text" placeholder="Optional">
+          </div>
+          <div>
+            <label for="connectorSchema">Connector schema JSON</label>
+            <input id="connectorSchema" type="file" accept=".json,application/json">
+          </div>
+        </div>
+      </details>
+
+      <button id="generateButton" type="button" class="primary">Generate evaluation set</button>
+    </section>
+
+    <section id="progressPanel" class="panel hidden">
+      <div class="step-heading">
+        <span class="step-number">3</span>
+        <div>
+          <h2>Progress</h2>
+          <p id="progressMessage">Waiting to start...</p>
+        </div>
+      </div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <pre id="logOutput" class="log" aria-live="polite"></pre>
+      <div id="fileLinks" class="button-row hidden">
+        <a id="downloadCsv" class="button secondary" href="#">Download generated CSV</a>
+        <a id="downloadReview" class="button secondary" href="#">Download review notes</a>
+        <button id="openFolderButton" type="button" class="secondary">Open output folder</button>
+      </div>
+    </section>
+
+    <section id="reviewPanel" class="panel hidden">
+      <div class="step-heading">
+        <span class="step-number">4</span>
+        <div>
+          <h2>Review and edit evaluations</h2>
+          <p>Edit prompts, expected answers, and source locations before scoring.</p>
+        </div>
+      </div>
+      <div class="button-row">
+        <button id="saveButton" type="button">Save edits</button>
+        <span id="saveStatus" class="muted">No unsaved changes.</span>
+      </div>
+      <div id="evalEditor" class="eval-list"></div>
+    </section>
+
+    <section id="scorePanel" class="panel hidden">
+      <div class="step-heading">
+        <span class="step-number">5</span>
+        <div>
+          <h2>Score the evaluation</h2>
+          <p>When review is complete, run EvalScore to ask WorkIQ / Microsoft 365 Copilot and score the answers.</p>
+        </div>
+      </div>
+
+      <div class="grid two">
+        <div>
+          <label for="connectorId">Connector ID</label>
+          <input id="connectorId" type="text" placeholder="Optional">
+        </div>
+        <div>
+          <label for="scoreTenantId">Tenant ID</label>
+          <input id="scoreTenantId" type="text" placeholder="Optional">
+        </div>
+        <div>
+          <label for="threshold">Passing score threshold</label>
+          <input id="threshold" type="number" min="0" max="100" value="70">
+        </div>
+      </div>
+      <label for="systemPrompt">System prompt</label>
+      <textarea id="systemPrompt" rows="4" placeholder="Optional instructions to include when asking each question."></textarea>
+      <button id="scoreButton" type="button" class="primary">Score evaluation</button>
+      <div id="scoreResults" class="result-box hidden"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

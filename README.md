@@ -6,6 +6,7 @@ This repository is a toolkit for creating and running Microsoft 365 Copilot / Wo
 |------|----------|---------|
 | **EvalGen** | [`eval-gen/`](eval-gen/README.md) | Generates evaluation datasets: prompts, expected answers, source locations, assertions, and review artifacts from source data. |
 | **EvalScore** | [`eval-score/`](eval-score/README.md) | Runs evaluation datasets against WorkIQ / Microsoft 365 Copilot, records actual answers, scores responses, evaluates assertions, and writes reports. |
+| **Eval UI** | [`eval-ui/`](eval-ui/README.md) | Local browser UI for business users to browse datasets, generate eval sets, review/edit them, and optionally score them. |
 | **m365-copilot-eval adapter** | [`scripts/`](scripts/) | Converts EvalGen output to the `@microsoft/m365-copilot-eval` schema and runs Microsoft's agent evaluation CLI. |
 
 ## End-to-End Workflow
@@ -31,6 +32,7 @@ EvaluationCLI/
 │   ├── powershell/                 # PowerShell implementation
 │   └── README.md                   # Deep EvalScore documentation
 │
+├── eval-ui/                        # Local browser UI for non-technical users
 ├── environment-datasets/           # Sample connector/source datasets for eval generation
 ├── eval-output/                    # Local generated eval sets and reports
 ├── .copilot/skills/                # Copilot CLI skill definitions
@@ -111,6 +113,8 @@ uninstall-tools.cmd -CleanLocal
 ```
 
 ## Quick Start
+
+For a guided browser experience, double-click `Start Eval UI.cmd` from the project root. It starts the local Eval UI app and opens a browser for dataset selection, eval generation, review/editing, and optional scoring.
 
 Generate an eval set from the full environment dataset:
 
