@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { readDatasetFile } from '../src/readers';
 
@@ -17,6 +19,30 @@ describe('readDatasetFile', () => {
     expect(result.format).toBe('json');
     expect(result.records.length).toBe(5);
     expect(result.records[0]).toHaveProperty('project_name', 'Apollo');
+  });
+
+  it('reads JSONL files without loading the whole file as one string', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eval-gen-jsonl-'));
+    const filePath = path.join(tempDir, 'records.jsonl');
+    const longValue = 'x'.repeat(1024 * 1024 + 10);
+
+    try {
+      fs.writeFileSync(
+        filePath,
+        `${JSON.stringify({ id: 1, name: 'Alpha', notes: longValue })}\r\n\n${JSON.stringify({ id: 2, name: 'Beta' })}\n`,
+        'utf-8',
+      );
+
+      const result = readDatasetFile(filePath);
+
+      expect(result.format).toBe('jsonl');
+      expect(result.records).toHaveLength(2);
+      expect(result.records[0]).toHaveProperty('name', 'Alpha');
+      expect(result.records[0]).toHaveProperty('notes', longValue);
+      expect(result.records[1]).toHaveProperty('name', 'Beta');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('throws on missing file', () => {

@@ -1,32 +1,26 @@
 import { DatasetProfile, ColumnProfile, InputFormat } from './types';
 
 /**
- * Infer column data type from sample values
+ * Infer a single value's data type.
  */
-function inferType(values: unknown[]): ColumnProfile['dataType'] {
-  const types = new Set<string>();
+function inferValueType(value: unknown): Exclude<ColumnProfile['dataType'], 'null' | 'mixed'> {
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'number') return 'number';
 
-  for (const v of values) {
-    if (v === null || v === undefined || v === '') {
-      types.add('null');
-      continue;
-    }
-    if (typeof v === 'boolean') { types.add('boolean'); continue; }
-    if (typeof v === 'number') { types.add('number'); continue; }
-
-    const str = String(v);
-    // Check if it's a date
-    if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(str)) {
-      const parsed = new Date(str);
-      if (!isNaN(parsed.getTime())) { types.add('date'); continue; }
-    }
-    // Check if it's a number stored as string
-    if (!isNaN(Number(str)) && str.trim() !== '') { types.add('number'); continue; }
-
-    types.add('string');
+  const str = String(value);
+  // Check if it's a date
+  if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(str)) {
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) return 'date';
   }
 
-  types.delete('null');
+  // Check if it's a number stored as string
+  if (!isNaN(Number(str)) && str.trim() !== '') return 'number';
+
+  return 'string';
+}
+
+function mergeTypes(types: Set<Exclude<ColumnProfile['dataType'], 'null' | 'mixed'>>): ColumnProfile['dataType'] {
   if (types.size === 0) return 'null';
   if (types.size === 1) return types.values().next().value as ColumnProfile['dataType'];
   return 'mixed';
@@ -36,17 +30,63 @@ function inferType(values: unknown[]): ColumnProfile['dataType'] {
  * Profile a single column
  */
 function profileColumn(name: string, records: Record<string, unknown>[]): ColumnProfile {
-  const values = records.map(r => r[name]);
-  const nonNull = values.filter(v => v !== null && v !== undefined && v !== '');
-  const nullCount = values.length - nonNull.length;
+  const types = new Set<Exclude<ColumnProfile['dataType'], 'null' | 'mixed'>>();
+  const uniqueValues = new Set<string>();
+  const sampleValueStrings: string[] = [];
+  let valueCounts: Record<string, number> | undefined = {};
+  let nullCount = 0;
+  let numericMin: number | undefined;
+  let numericMax: number | undefined;
+  let minDateTime: number | undefined;
+  let maxDateTime: number | undefined;
 
-  const uniqueValues = new Set(nonNull.map(v => String(v)));
+  for (const record of records) {
+    const value = record[name];
+    if (value === null || value === undefined || value === '') {
+      nullCount++;
+      continue;
+    }
+
+    const key = String(value);
+    if (!uniqueValues.has(key)) {
+      uniqueValues.add(key);
+      if (sampleValueStrings.length < 10) {
+        sampleValueStrings.push(key);
+      }
+    }
+
+    if (valueCounts) {
+      valueCounts[key] = (valueCounts[key] || 0) + 1;
+      if (Object.keys(valueCounts).length > 20) {
+        valueCounts = undefined;
+      }
+    }
+
+    const valueType = inferValueType(value);
+    types.add(valueType);
+
+    const numericValue = Number(value);
+    if (!isNaN(numericValue)) {
+      numericMin = numericMin === undefined ? numericValue : Math.min(numericMin, numericValue);
+      numericMax = numericMax === undefined ? numericValue : Math.max(numericMax, numericValue);
+    }
+
+    const str = String(value);
+    if (/^\d{4}-\d{2}-\d{2}/.test(str) || /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(str)) {
+      const parsedDate = new Date(str);
+      if (!isNaN(parsedDate.getTime())) {
+        const time = parsedDate.getTime();
+        minDateTime = minDateTime === undefined ? time : Math.min(minDateTime, time);
+        maxDateTime = maxDateTime === undefined ? time : Math.max(maxDateTime, time);
+      }
+    }
+  }
+
   const uniqueCount = uniqueValues.size;
-
-  const dataType = inferType(values);
+  const dataType = mergeTypes(types);
 
   // Sample up to 10 unique values
-  const sampleValues = Array.from(uniqueValues).slice(0, 10).map(s => {
+  const sampleValues = sampleValueStrings.map(s => {
     if (dataType === 'number') return Number(s);
     return s;
   });
@@ -56,39 +96,25 @@ function profileColumn(name: string, records: Record<string, unknown>[]): Column
     dataType,
     nullCount,
     uniqueCount,
-    totalCount: values.length,
+    totalCount: records.length,
     sampleValues,
   };
 
   // Value counts for low-cardinality categorical columns
-  if (uniqueCount <= 20 && dataType === 'string') {
-    const counts: Record<string, number> = {};
-    for (const v of nonNull) {
-      const key = String(v);
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    profile.valueCounts = counts;
+  if (uniqueCount <= 20 && dataType === 'string' && valueCounts) {
+    profile.valueCounts = valueCounts;
   }
 
   // Min/max for numeric columns
-  if (dataType === 'number' && nonNull.length > 0) {
-    const nums = nonNull.map(v => Number(v)).filter(n => !isNaN(n));
-    if (nums.length > 0) {
-      profile.min = Math.min(...nums);
-      profile.max = Math.max(...nums);
-    }
+  if (dataType === 'number' && numericMin !== undefined && numericMax !== undefined) {
+    profile.min = numericMin;
+    profile.max = numericMax;
   }
 
   // Min/max for date columns
-  if (dataType === 'date' && nonNull.length > 0) {
-    const dates = nonNull
-      .map(v => new Date(String(v)))
-      .filter(d => !isNaN(d.getTime()))
-      .sort((a, b) => a.getTime() - b.getTime());
-    if (dates.length > 0) {
-      profile.min = dates[0].toISOString();
-      profile.max = dates[dates.length - 1].toISOString();
-    }
+  if (dataType === 'date' && minDateTime !== undefined && maxDateTime !== undefined) {
+    profile.min = new Date(minDateTime).toISOString();
+    profile.max = new Date(maxDateTime).toISOString();
   }
 
   return profile;

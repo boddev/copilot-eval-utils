@@ -26,6 +26,21 @@ For an output path like `../eval-output/environment-datasets-eval.csv`, EvalGen 
 7. **Generate assertions** — Creates machine-checkable assertions such as `must_contain`.
 8. **Validate and export** — Deduplicates, checks category balance, computes coverage, and writes outputs.
 
+## Generating Multiple Eval Sets
+
+Use `--avoid-evalsets` when generating additional eval sets from the same dataset. It accepts a prior `.evalgen.json` file or a directory containing sidecars, compares against prior prompts and source rows for the same `source_file`, and removes cross-run duplicates before writing the new CSV. Assertion-signature overlaps are reported as warnings in the log and sidecar metadata because identical assertion values can be legitimate across distinct questions.
+
+```powershell
+eval-gen `
+  --file ".\data\records.jsonl" `
+  --description "Clinical trials records focused on recruiting studies." `
+  --count 30 `
+  --output ".\output\clinical-trials-set-2.csv" `
+  --avoid-evalsets ".\output"
+```
+
+The Eval UI passes its jobs directory automatically, so new UI generations avoid prompt/source-row duplicates from prior UI-generated sidecars.
+
 ## Quick Start
 
 ```powershell
@@ -239,6 +254,7 @@ eval-gen\examples\environment-datasets-connector-schema.json
 | `--m365-time-zone <zone>` | Direct Graph API location hint | Local time zone |
 | `--m365-tenant <tenantId>` | Direct Graph API tenant ID | Current tenant |
 | `--extensions <list>` | File extensions to include for directory input | All supported |
+| `--avoid-evalsets <paths>` | Comma-separated `.evalgen.json` files or directories to compare against and avoid prompt/source-row duplicates | — |
 | `--dry-run` | Profile and diagnose only; no LLM calls | false |
 
 ## Environment Variables

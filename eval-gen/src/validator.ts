@@ -8,6 +8,7 @@ import {
   DEFAULT_CATEGORY_WEIGHTS,
 } from './types';
 import { computeGroundingConfidence } from './answer-grounder';
+import { isNearDuplicatePrompt, normalizePrompt } from './dedupe';
 
 /**
  * Deduplicate questions by checking for near-identical prompts.
@@ -22,23 +23,12 @@ function deduplicateQuestions(items: GeneratedEvalItem[]): {
   let removedCount = 0;
 
   for (const item of items) {
-    const normalized = item.prompt
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    const normalized = normalizePrompt(item.prompt);
 
     // Check for exact or near-duplicate
     let isDuplicate = false;
     for (const existing of seen) {
-      if (existing === normalized) {
-        isDuplicate = true;
-        break;
-      }
-      // Simple substring overlap check
-      const shorter = normalized.length < existing.length ? normalized : existing;
-      const longer = normalized.length < existing.length ? existing : normalized;
-      if (longer.includes(shorter) && shorter.length / longer.length > 0.8) {
+      if (existing === normalized || isNearDuplicatePrompt(normalized, existing)) {
         isDuplicate = true;
         break;
       }

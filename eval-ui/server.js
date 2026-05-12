@@ -509,7 +509,9 @@ async function runGenerate(job) {
     '--count', String(job.settings.count),
     '--output', outputCsv,
     '--provider', job.settings.provider || 'm365-copilot',
+    '--avoid-evalsets', jobsDir,
   ];
+  emit(job, 'log', `EvalGen will compare against prior eval set sidecars in ${jobsDir}.`);
 
   if (job.settings.extensions && job.settings.extensions.length > 0) {
     args.push('--extensions', job.settings.extensions.join(','));

@@ -37,7 +37,14 @@ export function writeSidecarJson(
   description: string,
   sourceFile: string,
   outputPath: string,
-  options?: { warnings?: string[]; model?: string },
+  options?: {
+    warnings?: string[];
+    model?: string;
+    avoidanceEvalsets?: string[];
+    avoidanceItemsCompared?: number;
+    crossRunDuplicatesRemoved?: number;
+    crossRunAssertionOverlaps?: number;
+  },
 ): string {
   const evalSet: EvalSet = {
     version: '1.0',
@@ -50,6 +57,10 @@ export function writeSidecarJson(
     metadata: {
       model: options?.model ?? 'unknown',
       evalgen_version: '1.0.0',
+      avoidance_evalsets: options?.avoidanceEvalsets,
+      avoidance_items_compared: options?.avoidanceItemsCompared,
+      cross_run_duplicates_removed: options?.crossRunDuplicatesRemoved,
+      cross_run_assertion_overlaps: options?.crossRunAssertionOverlaps,
     },
   };
 

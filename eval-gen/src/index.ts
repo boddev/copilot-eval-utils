@@ -16,6 +16,7 @@ import { writeEvalCsv, writeSidecarJson, writeReviewMarkdown } from './writers';
 import { createLLMClient } from './llm-client';
 import { loadConnectorSchema, runDiagnostics, formatDiagnosticReport } from './connector-diagnostics';
 import { ApiSource, DatabaseSource, WebSource } from './sources';
+import { filterAgainstAvoidance, loadAvoidanceSet } from './dedupe';
 
 /** Extended CLI options with source-type support */
 interface ExtendedOptions extends CliOptions {
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
     .option('--m365-time-zone <zone>', 'Time zone for Microsoft 365 Copilot Chat API locationHint')
     .option('--m365-tenant <tenantId>', 'Microsoft Entra tenant ID for Microsoft 365 Copilot authentication')
     .option('--extensions <list>', 'Comma-separated file extensions to include when --file is a directory')
+    .option('--avoid-evalsets <paths>', 'Comma-separated .evalgen.json files or directories to avoid duplicating')
     .option('--dry-run', 'Profile and diagnose only, no LLM calls')
     .action(async (opts) => {
       const options: ExtendedOptions = {
@@ -72,6 +74,7 @@ async function main(): Promise<void> {
         m365TimeZone: opts.m365TimeZone as string | undefined,
         m365TenantId: opts.m365Tenant as string | undefined,
         extensions: splitCsvOption(opts.extensions as string | undefined),
+        avoidEvalsets: splitCsvOption(opts.avoidEvalsets as string | undefined),
         sourceType: opts.sourceType as ExtendedOptions['sourceType'],
         sourceUrl: opts.sourceUrl as string | undefined,
         openapiSpec: opts.openapiSpec as string | undefined,
@@ -104,6 +107,7 @@ async function main(): Promise<void> {
     .option('--m365-time-zone <zone>', 'Time zone for Microsoft 365 Copilot Chat API locationHint')
     .option('--m365-tenant <tenantId>', 'Microsoft Entra tenant ID for Microsoft 365 Copilot authentication')
     .option('--extensions <list>', 'Comma-separated file extensions to include when --file is a directory')
+    .option('--avoid-evalsets <paths>', 'Comma-separated .evalgen.json files or directories to avoid duplicating')
     .option('--dry-run', 'Profile and diagnose only, no LLM calls')
     .action(async (opts) => {
       if ((opts.file || opts.sourceType) && opts.description) {
@@ -120,6 +124,7 @@ async function main(): Promise<void> {
           m365TimeZone: opts.m365TimeZone as string | undefined,
           m365TenantId: opts.m365Tenant as string | undefined,
           extensions: splitCsvOption(opts.extensions as string | undefined),
+          avoidEvalsets: splitCsvOption(opts.avoidEvalsets as string | undefined),
           sourceType: opts.sourceType as ExtendedOptions['sourceType'],
           sourceUrl: opts.sourceUrl as string | undefined,
           openapiSpec: opts.openapiSpec as string | undefined,
@@ -147,6 +152,9 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
   console.error(`  Description: ${options.description.slice(0, 60)}${options.description.length > 60 ? '...' : ''}`);
   console.error(`  Count:       ${options.count}`);
   console.error(`  Output:      ${path.resolve(options.output)}`);
+  if (options.avoidEvalsets && options.avoidEvalsets.length > 0) {
+    console.error(`  Avoiding:    ${options.avoidEvalsets.map(p => path.resolve(p)).join(', ')}`);
+  }
   if (!options.dryRun) {
     console.error(`  Provider:    ${options.provider ?? 'm365-copilot'}`);
   }
@@ -303,8 +311,38 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
 
   // 6. Validate + export
   console.error(`Step ${step++}/${totalSteps}: Validating and exporting...`);
-  const evalItems = buildEvalItems(grounded, assertionMap);
+  let evalItems = buildEvalItems(grounded, assertionMap);
+  let avoidanceFiles: string[] = [];
+  let avoidanceItemsCompared = 0;
+  let crossRunDuplicatesRemoved = 0;
+  let crossRunAssertionOverlaps = 0;
+  let avoidanceWarnings: string[] = [];
+  if (options.avoidEvalsets && options.avoidEvalsets.length > 0) {
+    const outputSidecarPath = path.resolve(options.output.replace(/\.(csv|xlsx|json)$/i, '.evalgen.json'));
+    const avoidance = loadAvoidanceSet(options.avoidEvalsets, [outputSidecarPath]);
+    const filtered = filterAgainstAvoidance(evalItems, avoidance, sourceName);
+    evalItems = filtered.items;
+    avoidanceFiles = avoidance.files;
+    avoidanceItemsCompared = avoidance.items.length;
+    crossRunDuplicatesRemoved = filtered.removedCount;
+    crossRunAssertionOverlaps = filtered.assertionOverlapCount;
+    avoidanceWarnings = filtered.warnings;
+
+    console.error(`  Compared against ${avoidanceItemsCompared} prior eval item(s) from ${avoidanceFiles.length} sidecar file(s)`);
+    if (filtered.removedCount > 0) {
+      console.error(
+        `  Removed ${filtered.removedCount} cross-run duplicate item(s) ` +
+        `(${filtered.duplicatePromptCount} prompt match(es), ${filtered.duplicateSourceLocationCount} source row match(es))`
+      );
+    } else {
+      console.error('  No cross-run prompt or source-row duplicates found');
+    }
+    for (const warning of avoidanceWarnings) {
+      console.error(`  ${warning}`);
+    }
+  }
   const { validated, result } = validateEvalSet(evalItems, records.length);
+  const totalValidatedAssertions = validated.reduce((sum, item) => sum + item.assertions.length, 0);
 
   // Print validation summary
   if (result.issues.length > 0) {
@@ -344,8 +382,12 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
 
   // Write sidecar JSON (with diagnostics warnings if any)
   const jsonPath = writeSidecarJson(validated, options.description, sourceName, options.output, {
-    warnings: diagnosticWarnings,
+    warnings: [...(diagnosticWarnings ?? []), ...avoidanceWarnings],
     model: options.model,
+    avoidanceEvalsets: avoidanceFiles,
+    avoidanceItemsCompared,
+    crossRunDuplicatesRemoved,
+    crossRunAssertionOverlaps,
   });
 
   let reviewPath: string | undefined;
@@ -366,7 +408,7 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
     console.log(`  Diagnostics:   ${diagnosticsPath}`);
   }
   console.log(`  Questions:     ${validated.length}`);
-  console.log(`  Assertions:    ${totalAssertions}`);
+  console.log(`  Assertions:    ${totalValidatedAssertions}`);
   if (result.uniqueRowsReferenced !== undefined && result.totalRows !== undefined && result.totalRows > 0) {
     console.log(`  Coverage:      ${Math.round(result.coverageScore * 100)}% (${result.uniqueRowsReferenced} of ${result.totalRows} source rows tested)`);
     if (result.datasetSampledNotExhaustive) {

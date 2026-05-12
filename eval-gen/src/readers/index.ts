@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { TextDecoder } from 'util';
 import { parse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
 import { InputFormat } from '../types';
@@ -65,12 +66,49 @@ function readJson(filePath: string): Record<string, unknown>[] {
 
 /** Read JSONL file (one JSON object per line) */
 function readJsonl(filePath: string): Record<string, unknown>[] {
-  const content = fs.readFileSync(filePath, 'utf-8');
-  return content
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0)
-    .map(line => JSON.parse(line) as Record<string, unknown>);
+  const records: Record<string, unknown>[] = [];
+  const fd = fs.openSync(filePath, 'r');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const decoder = new TextDecoder('utf-8');
+  let remainder = '';
+  let lineNumber = 1;
+
+  const parseLine = (line: string, currentLineNumber: number): void => {
+    const trimmed = (currentLineNumber === 1 ? line.replace(/^\uFEFF/, '') : line).trim();
+    if (trimmed.length === 0) return;
+    try {
+      records.push(JSON.parse(trimmed) as Record<string, unknown>);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid JSONL in ${filePath} at line ${currentLineNumber}: ${message}`);
+    }
+  };
+
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      const decoded = bytesRead > 0
+        ? decoder.decode(buffer.subarray(0, bytesRead), { stream: true })
+        : decoder.decode();
+      if (decoded.length === 0 && bytesRead > 0) continue;
+
+      const lines = (remainder + decoded).split('\n');
+      remainder = lines.pop() ?? '';
+      for (const line of lines) {
+        parseLine(line, lineNumber);
+        lineNumber++;
+      }
+    } while (bytesRead > 0);
+
+    if (remainder.trim().length > 0) {
+      parseLine(remainder, lineNumber);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return records;
 }
 
 /** Read XLSX file (first sheet as tabular data) */
@@ -436,9 +474,8 @@ export function readDatasetFile(fileInput: string, options: ReadDatasetOptions =
     const fileName = path.basename(filePath);
     for (const record of records) {
       record._source_file = fileName;
+      allRecords.push(record);
     }
-
-    allRecords.push(...records);
   }
 
   if (allRecords.length === 0) {

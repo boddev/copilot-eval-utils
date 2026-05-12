@@ -100,6 +100,10 @@ export interface EvalSet {
     model: string;
     source_hash?: string;
     evalgen_version: string;
+    avoidance_evalsets?: string[];
+    avoidance_items_compared?: number;
+    cross_run_duplicates_removed?: number;
+    cross_run_assertion_overlaps?: number;
   };
 }
 
@@ -168,6 +172,7 @@ export interface CliOptions {
   m365TimeZone?: string;
   m365TenantId?: string;
   extensions?: string[];
+  avoidEvalsets?: string[];
 }
 
 /** Interface for LLM client */
