@@ -2,7 +2,7 @@ import { stringify } from 'csv-stringify/sync';
 import * as fs from 'fs';
 import { EvalRow } from '../types';
 
-const COLUMNS = ['prompt', 'expected_answer', 'source_location', 'actual_answer', 'similarity_score'];
+const COLUMNS = ['prompt', 'expected_answer', 'source_location', 'actual_answer', 'similarity_score', 'metrics'];
 
 export async function writeCsv(rows: EvalRow[], outputPath: string, delimiter?: string): Promise<void> {
   const records = rows.map((row) => ({
@@ -11,6 +11,7 @@ export async function writeCsv(rows: EvalRow[], outputPath: string, delimiter?: 
     source_location: row.sourceLocation,
     actual_answer: row.actualAnswer,
     similarity_score: row.similarityScore ?? '',
+    metrics: row.metrics ? JSON.stringify(row.metrics) : '',
   }));
 
   const output = stringify(records, {

@@ -6,6 +6,10 @@ class EvalRow {
     [string]$SourceLocation
     [string]$ActualAnswer
     [Nullable[int]]$SimilarityScore
+    [object[]]$Metrics
+    [object[]]$Citations
+    [object]$ResponseMetadata
+    [string]$ConversationId
 
     EvalRow() {
         $this.Prompt = ''
@@ -13,6 +17,10 @@ class EvalRow {
         $this.SourceLocation = ''
         $this.ActualAnswer = ''
         $this.SimilarityScore = $null
+        $this.Metrics = @()
+        $this.Citations = @()
+        $this.ResponseMetadata = $null
+        $this.ConversationId = ''
     }
 
     EvalRow([string]$prompt, [string]$expectedAnswer, [string]$sourceLocation, [string]$actualAnswer) {
@@ -21,6 +29,10 @@ class EvalRow {
         $this.SourceLocation = $sourceLocation
         $this.ActualAnswer = $actualAnswer
         $this.SimilarityScore = $null
+        $this.Metrics = @()
+        $this.Citations = @()
+        $this.ResponseMetadata = $null
+        $this.ConversationId = ''
     }
 }
 
@@ -30,6 +42,11 @@ class EvalResult {
     [string]$InputFormat  # csv, tsv, xlsx, json
     [string]$Timestamp    # ISO 8601
     [string]$SystemPrompt
+    [string]$TargetType
+    [string]$AgentId
+    [string]$ConnectorId
+    [string]$JudgeProvider
+    [string[]]$Evaluators
 
     EvalResult() {
         $this.Rows = @()
@@ -37,6 +54,11 @@ class EvalResult {
         $this.InputFormat = ''
         $this.Timestamp = (Get-Date -Format 'o')
         $this.SystemPrompt = ''
+        $this.TargetType = 'workiq'
+        $this.AgentId = ''
+        $this.ConnectorId = ''
+        $this.JudgeProvider = 'workiq'
+        $this.Evaluators = @('SemanticSimilarity')
     }
 }
 
@@ -67,6 +89,12 @@ class CliOptions {
     [string]$OutputDir
     [int]$Threshold
     [string]$TenantId
+    [string]$M365AgentId
+    [string]$ConnectorId
+    [string]$JudgeProvider
+    [string]$Evaluators
+    [int]$Concurrency
+    [int]$DelayMs
 
     CliOptions() {
         $this.Input = ''
@@ -75,5 +103,11 @@ class CliOptions {
         $this.OutputDir = './output'
         $this.Threshold = 70
         $this.TenantId = ''
+        $this.M365AgentId = ''
+        $this.ConnectorId = ''
+        $this.JudgeProvider = 'workiq'
+        $this.Evaluators = 'SemanticSimilarity'
+        $this.Concurrency = 1
+        $this.DelayMs = 500
     }
 }

@@ -94,7 +94,7 @@ describe('evaluatePrompts', () => {
     expect(progressCalls[1]).toEqual({ completed: 2, total: 2, prompt: 'Capital of France?' });
   });
 
-  it('prepends connector targeting instructions when connectorId is provided', async () => {
+  it('prepends connector targeting instructions when connectorPromptHint is enabled', async () => {
     const callLog: string[] = [];
     const client: WorkIQClient = {
       async ask(question: string) {
@@ -106,6 +106,7 @@ describe('evaluatePrompts', () => {
 
     await evaluatePrompts(rows, client, {
       connectorId: 'ngoenvironment',
+      connectorPromptHint: true,
       systemPrompt: 'Use environmental data.',
     });
 
@@ -113,5 +114,46 @@ describe('evaluatePrompts', () => {
     expect(callLog[0]).toContain('Target Microsoft 365 Copilot connector ID: ngoenvironment');
     expect(callLog[0]).toContain('Use environmental data.');
     expect(callLog[0]).toContain('What is 2+2?');
+  });
+
+  it('does not inject connector targeting instructions by default', async () => {
+    const callLog: string[] = [];
+    const client: WorkIQClient = {
+      async ask(question: string) {
+        callLog.push(question);
+        return 'answer';
+      },
+    };
+    const rows = [makeRows()[0]];
+
+    await evaluatePrompts(rows, client, {
+      connectorId: 'ngoenvironment',
+      delayMs: 0,
+    });
+
+    expect(callLog).toEqual(['What is 2+2?']);
+  });
+
+  it('passes agent targeting options to metadata-aware clients', async () => {
+    const callLog: Array<{ question: string; agentId?: string }> = [];
+    const client: WorkIQClient = {
+      async ask() {
+        throw new Error('ask should not be called');
+      },
+      async askWithMetadata(question, options) {
+        callLog.push({ question, agentId: options?.agentId });
+        return { text: 'agent answer', conversationId: 'ctx-1' };
+      },
+    };
+    const rows = [makeRows()[0]];
+
+    await evaluatePrompts(rows, client, {
+      agentId: 'agent-123',
+      delayMs: 0,
+    });
+
+    expect(callLog).toEqual([{ question: 'What is 2+2?', agentId: 'agent-123' }]);
+    expect(rows[0].actualAnswer).toBe('agent answer');
+    expect(rows[0].conversationId).toBe('ctx-1');
   });
 });

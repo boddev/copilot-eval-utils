@@ -69,6 +69,20 @@ export function generateReport(evalResult: EvalResult, scoringResult: ScoringRes
   if (evalResult.systemPrompt != null) {
     lines.push(`- **System Prompt:** ${truncate(evalResult.systemPrompt, 200)}`);
   }
+  if (evalResult.target) {
+    const target = evalResult.target.type === 'm365-agent'
+      ? `M365 Agent ID: ${evalResult.target.agentId}`
+      : evalResult.target.type === 'connector'
+        ? `Connector ID: ${evalResult.target.connectorId}`
+        : 'WorkIQ default';
+    lines.push(`- **Response Target:** ${target}`);
+  }
+  if (evalResult.judgeProvider) {
+    lines.push(`- **Judge Provider:** ${evalResult.judgeProvider}`);
+  }
+  if (evalResult.evaluators?.length) {
+    lines.push(`- **Evaluators:** ${evalResult.evaluators.join(', ')}`);
+  }
 
   lines.push(`- **Total Questions:** ${scoringResult.totalQuestions}`);
   lines.push(`- **Average Score:** ${scoringResult.averageScore.toFixed(1)}`);
@@ -152,6 +166,18 @@ export function generateReport(evalResult: EvalResult, scoringResult: ScoringRes
       lines.push(`**Score:** ${row.similarityScore}/100 ${icon}`);
     } else {
       lines.push('**Score:** N/A');
+    }
+
+    if (row.metrics && row.metrics.length > 0) {
+      lines.push('');
+      lines.push('**Metrics:**');
+      for (const metric of row.metrics) {
+        const value = metric.score !== undefined ? `${metric.score}/100` : String(metric.passed ?? 'N/A');
+        const icon = metric.passed === undefined ? '' : metric.passed ? ' ✅' : ' ❌';
+        const provider = metric.model ? `${metric.provider}/${metric.model}` : metric.provider;
+        const reason = metric.reason ? ` - ${truncate(metric.reason, 120)}` : '';
+        lines.push(`- **${metric.name}:** ${value}${icon} (${provider})${reason}`);
+      }
     }
 
     lines.push('');

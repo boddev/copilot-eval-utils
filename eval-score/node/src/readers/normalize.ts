@@ -19,6 +19,10 @@ const HEADER_ALIASES: Record<string, keyof EvalRow> = {
   'actualanswer': 'actualAnswer',
   'actual_answer': 'actualAnswer',
   'actual answer': 'actualAnswer',
+  // similarityScore
+  'similarityscore': 'similarityScore',
+  'similarity_score': 'similarityScore',
+  'similarity score': 'similarityScore',
 };
 
 /**
@@ -77,5 +81,18 @@ export function mapRow(
     }
   }
 
-  return { ...values };
+  const row: EvalRow = { ...values };
+  for (const [rawHeader, canonical] of headerMap) {
+    if (canonical === 'similarityScore') {
+      const rawValue = record[rawHeader];
+      if (rawValue !== undefined && rawValue !== null && String(rawValue).trim() !== '') {
+        const parsed = Number.parseInt(String(rawValue), 10);
+        if (Number.isFinite(parsed)) {
+          row.similarityScore = Math.max(0, Math.min(100, parsed));
+        }
+      }
+    }
+  }
+
+  return row;
 }

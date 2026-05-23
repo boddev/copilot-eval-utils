@@ -5,6 +5,9 @@ function Invoke-Evaluation {
         [Parameter(Mandatory)][EvalRow[]]$Rows,
         [string]$SystemPrompt,
         [string]$TenantId,
+        [string]$M365AgentId,
+        [string]$ConnectorId,
+        [bool]$ConnectorPromptHint = $true,
         [scriptblock]$AskClient,
         [int]$DelayMs = 500
     )
@@ -22,11 +25,17 @@ function Invoke-Evaluation {
             continue
         }
 
-        $fullPrompt = Build-Prompt -Question $row.Prompt -SystemPrompt $SystemPrompt
+        $fullPrompt = Build-Prompt -Question $row.Prompt -SystemPrompt $SystemPrompt -ConnectorId $ConnectorId -ConnectorPromptHint $ConnectorPromptHint
 
         try {
             if ($AskClient) {
                 $response = $AskClient.Invoke($fullPrompt)
+            } elseif ($M365AgentId) {
+                $a2aResponse = Send-WorkIQA2ARequest -Question $fullPrompt -AgentId $M365AgentId -ConversationId $row.ConversationId
+                $response = $a2aResponse.Text
+                $row.ConversationId = "$($a2aResponse.ConversationId)"
+                $row.ResponseMetadata = $a2aResponse.Raw
+                $row.Citations = @($a2aResponse.Citations)
             } else {
                 $requestCounter++
                 $sendParams = @{

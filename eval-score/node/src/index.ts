@@ -3,12 +3,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Command } from 'commander';
-import { EvalResult, CliOptions } from './types';
+import { EvalResult, CliOptions, JudgeProvider } from './types';
 import { readEvalFile } from './readers';
 import { writeEvalFile } from './writers';
-import { CliWorkIQClient, resolveSystemPrompt } from './workiq-client';
+import { A2AWorkIQClient, CliWorkIQClient, WorkIQClient, resolveSystemPrompt } from './workiq-client';
 import { evaluatePrompts } from './evaluator';
-import { scoreAnswers, calculateScoringResult } from './scorer';
+import { scoreAnswers, calculateScoringResult, parseEvaluators } from './scorer';
 import { generateReport, writeReport } from './reporter';
 import { loadAssertionsFromSidecar, evaluateAllAssertions } from './assertion-checker';
 import { loadEvalSet } from './evalset-loader';
@@ -24,6 +24,14 @@ async function main(): Promise<void> {
     .option('--system-prompt <text>', 'Inline system prompt')
     .option('--system-prompt-file <path>', 'Path to system prompt file')
     .option('--connector-id <id>', 'Microsoft 365 Copilot connector ID to target')
+    .option('--m365-agent-id <id>', 'Microsoft 365 Copilot agent ID to target through WorkIQ A2A')
+    .option('--connector-prompt-hint', 'Inject connector targeting text into WorkIQ prompts', false)
+    .option('--no-connector-prompt-hint', 'Do not inject connector targeting text into WorkIQ prompts')
+    .option('--judge-provider <provider>', 'Scoring provider: workiq, github-copilot, azure-openai', 'workiq')
+    .option('--evaluators <names>', 'Comma-separated evaluators or "all"', 'SemanticSimilarity')
+    .option('--concurrency <number>', 'Maximum concurrent request workers', '1')
+    .option('--delay-ms <number>', 'Delay between requests per worker', '500')
+    .option('--checkpoint-file <path>', 'JSON checkpoint file for partial high-volume results')
     .option('--output-dir <path>', 'Output directory', './output')
     .option('--threshold <number>', 'Pass/fail threshold (0-100)', '70')
     .option('--tenant-id <id>', 'Microsoft 365 tenant ID to target')
@@ -50,6 +58,13 @@ async function main(): Promise<void> {
     systemPrompt: opts.systemPrompt as string | undefined,
     systemPromptFile: opts.systemPromptFile as string | undefined,
     connectorId: opts.connectorId as string | undefined,
+    m365AgentId: opts.m365AgentId as string | undefined,
+    connectorPromptHint: opts.connectorPromptHint as boolean | undefined,
+    judgeProvider: opts.judgeProvider as JudgeProvider,
+    evaluators: opts.evaluators as string | undefined,
+    concurrency: parsePositiveInt(opts.concurrency, 1),
+    delayMs: parseNonNegativeInt(opts.delayMs, 500),
+    checkpointFile: opts.checkpointFile as string | undefined,
     outputDir: opts.outputDir as string,
     threshold: Number(opts.threshold),
     tenantId: opts.tenantId as string | undefined,
@@ -57,6 +72,10 @@ async function main(): Promise<void> {
   };
 
   const evalsetPath = opts.evalset as string | undefined;
+  const judgeProvider = validateJudgeProvider(options.judgeProvider ?? 'workiq');
+  const evaluators = parseEvaluators(options.evaluators);
+  const concurrency = options.concurrency ?? 1;
+  const delayMs = options.delayMs ?? 500;
 
   if (!options.input && !evalsetPath) {
     throw new Error('--input <path> or --evalset <path> is required. Use --setup to run preflight checks only.');
@@ -98,6 +117,12 @@ async function main(): Promise<void> {
   if (options.connectorId) {
     console.error(`  Connector ID:  ${options.connectorId}`);
   }
+  if (options.m365AgentId) {
+    console.error(`  M365 Agent ID: ${options.m365AgentId}`);
+  }
+  console.error(`  Judge:        ${judgeProvider}`);
+  console.error(`  Evaluators:   ${evaluators.join(', ')}`);
+  console.error(`  Concurrency:  ${concurrency}`);
   if (systemPrompt) {
     const preview = systemPrompt.length > 60 ? systemPrompt.slice(0, 60) + '...' : systemPrompt;
     console.error(`  System prompt: ${preview}`);
@@ -155,32 +180,64 @@ async function main(): Promise<void> {
     }
   }
 
-  // Create WorkIQ client and start persistent MCP session (auth once)
-  console.error('Starting WorkIQ session...');
-  const client = new CliWorkIQClient();
-  await client.start(options.tenantId);
-  console.error('  WorkIQ MCP session started.\n');
+  const checkpointFile = path.resolve(
+    options.checkpointFile ??
+    path.join(options.outputDir, `${path.basename(inputPath, path.extname(inputPath))}-checkpoint.json`)
+  );
+  const checkpoint = async () => writeCheckpoint(checkpointFile, rows, {
+    inputFile: inputPath,
+    judgeProvider,
+    evaluators,
+    target: buildTarget(options),
+  });
+
+  const responseClient: WorkIQClient = options.m365AgentId ? new A2AWorkIQClient() : new CliWorkIQClient();
+  const scoringClient: WorkIQClient = judgeProvider === 'workiq' && options.m365AgentId ? new CliWorkIQClient() : responseClient;
+
+  console.error(options.m365AgentId ? 'Starting WorkIQ A2A target...' : 'Starting WorkIQ session...');
+  await responseClient.start?.(options.tenantId);
+  if (scoringClient !== responseClient) {
+    await scoringClient.start?.(options.tenantId);
+  }
+  console.error(options.m365AgentId ? '  WorkIQ A2A target ready.\n' : '  WorkIQ MCP session started.\n');
 
   try {
     // Evaluate prompts
     console.error('Evaluating prompts...');
-    const evaluatedRows = await evaluatePrompts(rows, client, {
+    const responseConcurrency = options.m365AgentId ? concurrency : 1;
+    if (!options.m365AgentId && concurrency > 1) {
+      console.error('  WorkIQ MCP response generation is serialized; use --judge-provider github-copilot or azure-openai for concurrent scoring.');
+    }
+
+    const evaluatedRows = await evaluatePrompts(rows, responseClient, {
       systemPrompt,
       connectorId: options.connectorId,
+      connectorPromptHint: options.connectorPromptHint ?? false,
       tenantId: options.tenantId,
+      agentId: options.m365AgentId,
+      concurrency: responseConcurrency,
+      delayMs,
       onProgress: (completed, total, currentPrompt) => {
         const preview = currentPrompt.length > 50 ? currentPrompt.slice(0, 50) + '...' : currentPrompt;
         console.error(`  [${completed}/${total}] ${preview}`);
       },
+      onRowComplete: checkpoint,
     });
 
     // Score answers
     console.error('\nScoring answers...');
-    const scoredRows = await scoreAnswers(evaluatedRows, client, {
+    const scoringConcurrency = judgeProvider === 'workiq' ? 1 : concurrency;
+    const scoredRows = await scoreAnswers(evaluatedRows, scoringClient, {
       tenantId: options.tenantId,
+      judgeProvider,
+      evaluators,
+      concurrency: scoringConcurrency,
+      delayMs,
+      threshold: options.threshold,
       onProgress: (completed, total) => {
         console.error(`  [${completed}/${total}] Scoring...`);
       },
+      onRowComplete: checkpoint,
     });
 
     // Evaluate assertions (if loaded via --evalset or --sidecar)
@@ -203,6 +260,9 @@ async function main(): Promise<void> {
       inputFormat: format,
       timestamp: new Date().toISOString(),
       systemPrompt,
+      target: buildTarget(options),
+      judgeProvider,
+      evaluators,
     };
 
     // Generate and write report
@@ -245,8 +305,53 @@ async function main(): Promise<void> {
       process.exit(0);
     }
   } finally {
-    client.stop();
+    responseClient.stop?.();
+    if (scoringClient !== responseClient) {
+      scoringClient.stop?.();
+    }
   }
+}
+
+function validateJudgeProvider(value: string): JudgeProvider {
+  if (value === 'workiq' || value === 'github-copilot' || value === 'azure-openai') {
+    return value;
+  }
+  throw new Error(`Unsupported judge provider "${value}". Supported providers: workiq, github-copilot, azure-openai`);
+}
+
+function parsePositiveInt(value: unknown, defaultValue: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function parseNonNegativeInt(value: unknown, defaultValue: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
+function buildTarget(options: CliOptions): EvalResult['target'] {
+  if (options.m365AgentId) {
+    return { type: 'm365-agent', agentId: options.m365AgentId };
+  }
+  if (options.connectorId) {
+    return { type: 'connector', connectorId: options.connectorId };
+  }
+  return { type: 'workiq' };
+}
+
+async function writeCheckpoint(
+  checkpointFile: string,
+  rows: import('./types').EvalRow[],
+  metadata: Pick<EvalResult, 'inputFile' | 'target' | 'judgeProvider' | 'evaluators'>,
+): Promise<void> {
+  await fs.promises.mkdir(path.dirname(checkpointFile), { recursive: true });
+  const payload = {
+    schemaVersion: 'evalscore-results-v2',
+    timestamp: new Date().toISOString(),
+    ...metadata,
+    rows,
+  };
+  await fs.promises.writeFile(checkpointFile, JSON.stringify(payload, null, 2), 'utf-8');
 }
 
 main().catch((err: Error) => {

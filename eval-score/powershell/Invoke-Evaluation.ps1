@@ -39,6 +39,21 @@ param(
 
     [string]$TenantId,
 
+    [string]$M365AgentId,
+
+    [string]$ConnectorId,
+
+    [switch]$ConnectorPromptHint,
+
+    [ValidateSet('workiq', 'github-copilot', 'azure-openai')]
+    [string]$JudgeProvider = 'workiq',
+
+    [string]$Evaluators = 'SemanticSimilarity',
+
+    [int]$Concurrency = 1,
+
+    [int]$DelayMs = 500,
+
     [switch]$Setup,
 
     [switch]$SkipPreflight
@@ -95,6 +110,17 @@ try {
     if ($TenantId) {
         Write-Host "  Tenant ID:     $TenantId"
     }
+    if ($M365AgentId) {
+        Write-Host "  M365 Agent ID: $M365AgentId"
+    }
+    if ($ConnectorId) {
+        Write-Host "  Connector ID:  $ConnectorId"
+    }
+    Write-Host "  Judge:        $JudgeProvider"
+    Write-Host "  Evaluators:   $Evaluators"
+    if ($Concurrency -gt 1) {
+        Write-Host '  PowerShell runner uses conservative serialized request execution.' -ForegroundColor Yellow
+    }
     Write-Host '================================================'
     Write-Host ''
 
@@ -122,6 +148,10 @@ try {
         $evalParams = @{
             Rows         = $rows
             SystemPrompt = $resolvedPrompt
+            M365AgentId  = $M365AgentId
+            ConnectorId  = $ConnectorId
+            ConnectorPromptHint = [bool]$ConnectorPromptHint
+            DelayMs      = $DelayMs
         }
         if ($TenantId) { $evalParams['TenantId'] = $TenantId }
         $rows = Invoke-Evaluation @evalParams
@@ -130,8 +160,13 @@ try {
 
         # 11. Run scoring
         Write-Host 'Scoring responses...'
+        $evaluatorList = @(($Evaluators -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         $scoreParams = @{
             Rows = $rows
+            JudgeProvider = $JudgeProvider
+            Evaluators = $evaluatorList
+            Threshold = $Threshold
+            DelayMs = $DelayMs
         }
         if ($TenantId) { $scoreParams['TenantId'] = $TenantId }
         $rows = Invoke-Scoring @scoreParams
@@ -152,6 +187,11 @@ try {
     $evalResult.InputFormat = $format
     $evalResult.Timestamp = (Get-Date).ToUniversalTime().ToString('o')
     $evalResult.SystemPrompt = $resolvedPrompt
+    $evalResult.TargetType = if ($M365AgentId) { 'm365-agent' } elseif ($ConnectorId) { 'connector' } else { 'workiq' }
+    $evalResult.AgentId = $M365AgentId
+    $evalResult.ConnectorId = $ConnectorId
+    $evalResult.JudgeProvider = $JudgeProvider
+    $evalResult.Evaluators = @(($Evaluators -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
     # 13. Generate and write report
     Write-Host 'Generating report...'

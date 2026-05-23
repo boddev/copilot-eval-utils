@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { EvalRow } from '../src/types';
-import { scoreAnswers, calculateScoringResult } from '../src/scorer';
+import { scoreAnswers, calculateScoringResult, parseEvaluators } from '../src/scorer';
 import { MockWorkIQClient, WorkIQClient } from '../src/workiq-client';
 
 function makeRow(overrides: Partial<EvalRow> = {}): EvalRow {
@@ -57,6 +57,48 @@ describe('scoreAnswers', () => {
     await scoreAnswers(rows, client);
 
     expect(rows[0].similarityScore).toBe(0);
+  });
+
+  it('records deterministic evaluator metrics alongside canonical score', async () => {
+    const client = new MockWorkIQClient({}, '100');
+    const rows = [
+      makeRow({
+        expectedAnswer: 'Paris',
+        actualAnswer: 'Paris',
+        sourceLocation: 'geo.xlsx',
+        citations: [{ sourceLocation: 'geo.xlsx' }],
+        assertions: [{ type: 'must_contain', value: 'Paris' }],
+      }),
+    ];
+
+    await scoreAnswers(rows, client, {
+      evaluators: ['SemanticSimilarity', 'ExactMatch', 'PartialMatch', 'Citations', 'EvalGenAssertions'],
+      threshold: 70,
+    });
+
+    expect(rows[0].similarityScore).toBe(100);
+    expect(rows[0].metrics?.map(metric => metric.name)).toEqual([
+      'SemanticSimilarity',
+      'ExactMatch',
+      'PartialMatch',
+      'Citations',
+      'EvalGenAssertions',
+    ]);
+    expect(rows[0].assertionResults?.[0].passed).toBe(true);
+  });
+});
+
+describe('parseEvaluators', () => {
+  it('parses comma-separated evaluator names', () => {
+    expect(parseEvaluators('SemanticSimilarity,ExactMatch')).toEqual(['SemanticSimilarity', 'ExactMatch']);
+  });
+
+  it('expands all evaluator preset', () => {
+    expect(parseEvaluators('all')).toContain('EvalGenAssertions');
+  });
+
+  it('rejects unsupported evaluators', () => {
+    expect(() => parseEvaluators('UnknownMetric')).toThrow(/Unsupported evaluator/);
   });
 });
 

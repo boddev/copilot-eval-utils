@@ -116,6 +116,32 @@ describe('readJson', () => {
     expect(rows[1].prompt).toBe('What is Node?');
     expect(rows[1].actualAnswer).toBe('');
   });
+
+  it('reads m365 eval document items and turns', async () => {
+    const jsonPath = path.join(FIXTURES_DIR, 'm365-doc.json');
+    const data = {
+      schemaVersion: 'm365-copilot-eval-v1',
+      items: [
+        {
+          id: 'multi-turn-1',
+          expected_answer: 'Final answer',
+          source_location: 'source.docx',
+          turns: [
+            { prompt: 'First question?', actual_answer: 'First answer' },
+            { prompt: 'Follow-up?', expected_answer: 'Follow-up answer', actual_answer: 'Final answer' },
+          ],
+        },
+      ],
+    };
+    fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf-8');
+
+    const rows = await readJson(jsonPath);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].prompt).toBe('First question?');
+    expect(rows[0].expectedAnswer).toBe('Final answer');
+    expect(rows[1].expectedAnswer).toBe('Follow-up answer');
+  });
 });
 
 describe('readEvalFile', () => {

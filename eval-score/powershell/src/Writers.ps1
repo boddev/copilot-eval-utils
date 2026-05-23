@@ -18,6 +18,7 @@ function ConvertFrom-EvalRowToPSObject {
         source_location  = $Row.SourceLocation
         actual_answer    = $Row.ActualAnswer
         similarity_score = $score
+        metrics          = if ($Row.Metrics -and $Row.Metrics.Count -gt 0) { ($Row.Metrics | ConvertTo-Json -Compress -Depth 10) } else { '' }
     }
 }
 

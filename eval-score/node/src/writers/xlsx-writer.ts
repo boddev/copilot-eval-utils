@@ -8,6 +8,7 @@ export async function writeXlsx(rows: EvalRow[], outputPath: string): Promise<vo
     source_location: row.sourceLocation,
     actual_answer: row.actualAnswer,
     similarity_score: row.similarityScore ?? '',
+    metrics: row.metrics ? JSON.stringify(row.metrics) : '',
   }));
 
   const worksheet = xlsx.utils.json_to_sheet(records);

@@ -23,6 +23,18 @@ function New-EvalReport {
         $truncatedPrompt = Truncate-Text -Text $EvalResult.SystemPrompt -MaxLength 200
         [void]$sb.AppendLine("- **System Prompt:** $truncatedPrompt")
     }
+    if (-not [string]::IsNullOrEmpty($EvalResult.TargetType)) {
+        $target = switch ($EvalResult.TargetType) {
+            'm365-agent' { "M365 Agent ID: $($EvalResult.AgentId)" }
+            'connector' { "Connector ID: $($EvalResult.ConnectorId)" }
+            default { 'WorkIQ default' }
+        }
+        [void]$sb.AppendLine("- **Response Target:** $target")
+    }
+    [void]$sb.AppendLine("- **Judge Provider:** $($EvalResult.JudgeProvider)")
+    if ($EvalResult.Evaluators -and $EvalResult.Evaluators.Count -gt 0) {
+        [void]$sb.AppendLine("- **Evaluators:** $($EvalResult.Evaluators -join ', ')")
+    }
 
     [void]$sb.AppendLine("- **Total Questions:** $($ScoringResult.TotalQuestions)")
     [void]$sb.AppendLine("- **Average Score:** $($ScoringResult.AverageScore.ToString('F1'))")
@@ -68,6 +80,18 @@ function New-EvalReport {
         }
         else {
             [void]$sb.AppendLine('**Score:** N/A')
+        }
+
+        if ($row.Metrics -and $row.Metrics.Count -gt 0) {
+            [void]$sb.AppendLine()
+            [void]$sb.AppendLine('**Metrics:**')
+            foreach ($metric in $row.Metrics) {
+                $value = if ($null -ne $metric.score) { "$($metric.score)/100" } else { "$($metric.passed)" }
+                $icon = if ($null -eq $metric.passed) { '' } elseif ($metric.passed) { ' ✅' } else { ' ❌' }
+                $provider = if ($metric.model) { "$($metric.provider)/$($metric.model)" } else { "$($metric.provider)" }
+                $reason = if ($metric.reason) { " - $(Truncate-Text -Text $metric.reason -MaxLength 120)" } else { '' }
+                [void]$sb.AppendLine("- **$($metric.name):** $value$icon ($provider)$reason")
+            }
         }
 
         [void]$sb.AppendLine()
