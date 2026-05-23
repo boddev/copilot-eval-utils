@@ -51,6 +51,9 @@ eval-score `
 # Load EvalGen sidecar directly as the eval source
 eval-score --evalset ..\..\eval-output\environment-datasets-eval.evalgen.json
 
+# Run EvalGen multi-prompt m365/evalscore JSON
+eval-score --input ..\..\eval-output\environment-datasets-eval-multi-prompt.json
+
 # Add a system prompt
 eval-score `
   --input ..\..\eval-output\environment-datasets-eval.csv `
@@ -72,7 +75,7 @@ eval-score `
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `--input <path>` | Yes, unless `--evalset` or `--setup` | CSV, TSV, XLSX, or JSON evaluation file |
+| `--input <path>` | Yes, unless `--evalset` or `--setup` | CSV, TSV, XLSX, or JSON evaluation file, including m365/evalscore multi-prompt JSON |
 | `--evalset <path>` | No | Load EvalGen `.evalgen.json` directly |
 | `--sidecar <path>` | No | Load EvalGen assertions/metadata alongside `--input` |
 | `--system-prompt <text>` | No | Text prepended to each prompt |
@@ -117,6 +120,8 @@ The reader normalizes common header variants.
 | Expected answer | `expected_answer`, `expectedAnswer`, `Expected Answer` |
 | Source location | `source_location`, `sourceLocation`, `Source Location` |
 | Actual answer | `actual_answer`, `actualAnswer`, `Actual Answer` |
+
+For m365/evalscore JSON, EvalScore supports `items[].turns[]` multi-prompt documents. EvalGen-authored synthetic multi-prompt groups keep thread ordering for reporting but do not pass provider conversation context between turns; hand-authored multi-turn documents still chain conversation context by default.
 
 ## Output
 

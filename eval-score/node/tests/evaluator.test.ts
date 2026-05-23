@@ -156,4 +156,44 @@ describe('evaluatePrompts', () => {
     expect(rows[0].actualAnswer).toBe('agent answer');
     expect(rows[0].conversationId).toBe('ctx-1');
   });
+
+  it('can preserve thread order without carrying conversation context between synthetic turns', async () => {
+    const callLog: Array<{ question: string; conversationId?: string }> = [];
+    const client: WorkIQClient = {
+      async ask() {
+        throw new Error('ask should not be called');
+      },
+      async askWithMetadata(question, options) {
+        callLog.push({ question, conversationId: options?.conversationId });
+        return { text: `answer for ${question}`, conversationId: `ctx-${callLog.length}` };
+      },
+    };
+    const rows: EvalRow[] = [
+      {
+        prompt: 'First synthetic prompt',
+        expectedAnswer: 'Expected',
+        sourceLocation: 'loc',
+        actualAnswer: '',
+        threadId: 'synthetic-thread',
+        turnIndex: 0,
+        conversationChaining: false,
+      },
+      {
+        prompt: 'Second synthetic prompt',
+        expectedAnswer: 'Expected',
+        sourceLocation: 'loc',
+        actualAnswer: '',
+        threadId: 'synthetic-thread',
+        turnIndex: 1,
+        conversationChaining: false,
+      },
+    ];
+
+    await evaluatePrompts(rows, client, { delayMs: 0 });
+
+    expect(callLog).toEqual([
+      { question: 'First synthetic prompt', conversationId: undefined },
+      { question: 'Second synthetic prompt', conversationId: undefined },
+    ]);
+  });
 });

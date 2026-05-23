@@ -85,7 +85,10 @@ export async function evaluatePrompts(
   async function processJob(job: number[]): Promise<void> {
     let conversationId: string | undefined;
     for (const rowIndex of job) {
-      conversationId = await processRow(rowIndex, conversationId);
+      const row = rows[rowIndex];
+      const inheritedConversationId = row.conversationChaining === false ? undefined : conversationId;
+      const nextConversationId = await processRow(rowIndex, inheritedConversationId);
+      conversationId = row.conversationChaining === false ? undefined : nextConversationId;
     }
   }
 

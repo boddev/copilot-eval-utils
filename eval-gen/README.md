@@ -12,6 +12,7 @@ For an output path like `../eval-output/environment-datasets-eval.csv`, EvalGen 
 |------|---------|
 | `environment-datasets-eval.csv` | EvalScore-compatible rows with `prompt`, `expected_answer`, `source_location`, and empty `actual_answer` |
 | `environment-datasets-eval.evalgen.json` | Rich sidecar with categories, assertions, grounding confidence, supporting facts, warnings, and metadata |
+| `environment-datasets-eval-multi-prompt.json` | Optional m365/evalscore JSON with prompts grouped into multi-prompt evaluator items when `--multi-prompt` is used |
 | `environment-datasets-eval-review.md` | Human-readable review document for inspecting generated questions before live evaluation |
 | `environment-datasets-eval-diagnostics.md` | Connector diagnostics when `--connector-schema` is supplied |
 
@@ -88,6 +89,31 @@ eval-score `
 ```
 
 The sidecar enables assertion-aware scoring in addition to semantic similarity scoring.
+
+### Multi-Prompt Evaluator Output
+
+Use `--multi-prompt` when you want EvalGen to also emit m365/evalscore JSON that groups generated prompts into multi-prompt evaluator items:
+
+```powershell
+eval-gen `
+  --file "..\environment-datasets" `
+  --extensions csv `
+  --description "Environmental datasets for the NGO environment Copilot connector." `
+  --count 30 `
+  --multi-prompt `
+  --multi-prompt-turns 3 `
+  --output "..\eval-output\environment-datasets-eval.csv"
+```
+
+The CSV and `.evalgen.json` sidecar are still written. The additional JSON defaults to `environment-datasets-eval-multi-prompt.json`; override it with `--multi-prompt-output`. `--count` remains the total number of prompts, so the last multi-prompt item may contain fewer turns when the count is not divisible by `--multi-prompt-turns`.
+
+EvalGen marks these grouped items as synthetic threads with conversation chaining disabled. EvalScore preserves the thread grouping and turn order, but does not reuse provider conversation context between generated prompts unless a hand-authored eval document explicitly enables that behavior.
+
+Run the generated multi-prompt JSON with EvalScore's regular `--input` option:
+
+```powershell
+eval-score --input "..\eval-output\environment-datasets-eval-multi-prompt.json"
+```
 
 ## Supported Inputs
 
@@ -255,6 +281,9 @@ eval-gen\examples\environment-datasets-connector-schema.json
 | `--m365-tenant <tenantId>` | Direct Graph API tenant ID | Current tenant |
 | `--extensions <list>` | File extensions to include for directory input | All supported |
 | `--avoid-evalsets <paths>` | Comma-separated `.evalgen.json` files or directories to compare against and avoid prompt/source-row duplicates | — |
+| `--multi-prompt` | Also emit m365/evalscore JSON grouped into multi-prompt evaluator items | false |
+| `--multi-prompt-turns <n>` | Prompts per multi-prompt item; clamped to 2–20 and enables `--multi-prompt` | 3 when enabled |
+| `--multi-prompt-output <path>` | Output path for multi-prompt JSON | `<output>-multi-prompt.json` |
 | `--dry-run` | Profile and diagnose only; no LLM calls | false |
 
 ## Environment Variables
@@ -301,4 +330,3 @@ npm test
 ```
 
 Do not commit `node_modules` or `dist`; they are ignored by the repository `.gitignore`.
-

@@ -132,6 +132,9 @@ export interface EvalRow {
   /** Multi-turn thread identifier/name used to preserve conversation boundaries. */
   threadId?: string;
 
+  /** When false, preserve thread ordering but do not pass provider conversation context between turns. */
+  conversationChaining?: boolean;
+
   /** Optional thread display fields from m365 eval documents. */
   threadName?: string;
   threadDescription?: string;

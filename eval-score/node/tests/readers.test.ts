@@ -142,6 +142,53 @@ describe('readJson', () => {
     expect(rows[0].expectedAnswer).toBe('Final answer');
     expect(rows[1].expectedAnswer).toBe('Follow-up answer');
   });
+
+  it('reads EvalGen metadata from m365 extensions on multi-prompt turns', async () => {
+    const jsonPath = path.join(FIXTURES_DIR, 'm365-evalgen-extension-doc.json');
+    const data = {
+      schemaVersion: '1.4.0',
+      items: [
+        {
+          id: 'thread-1',
+          name: 'EvalGen multi-prompt evaluator 1',
+          turns: [
+            {
+              prompt: 'Who owns Acme Corp?',
+              expected_response: 'Jane Smith owns Acme Corp.',
+              extensions: {
+                evalgen: {
+                  item_id: 'item-1',
+                  source_location: 'suppliers.csv:row 1',
+                  assertions: [{ type: 'must_contain', value: 'Jane Smith' }],
+                  category: 'single_record_lookup',
+                  difficulty: 'easy',
+                  grounding_confidence: 'high',
+                  synthetic_thread: true,
+                  conversation_chaining: false,
+                },
+              },
+            },
+          ],
+          extensions: {
+            evalgen: {
+              synthetic_thread: true,
+              conversation_chaining: false,
+            },
+          },
+        },
+      ],
+    };
+    fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), 'utf-8');
+
+    const rows = await readJson(jsonPath);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe('item-1');
+    expect(rows[0].sourceLocation).toBe('suppliers.csv:row 1');
+    expect(rows[0].assertions).toEqual([{ type: 'must_contain', value: 'Jane Smith' }]);
+    expect(rows[0].conversationChaining).toBe(false);
+    expect((rows[0] as typeof rows[number] & { _category?: string })._category).toBe('single_record_lookup');
+  });
 });
 
 describe('readEvalFile', () => {

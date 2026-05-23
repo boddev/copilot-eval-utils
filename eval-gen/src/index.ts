@@ -12,7 +12,7 @@ import { groundAllAnswers } from './answer-grounder';
 import { generateAllAssertions } from './assertion-generator';
 import { buildEvalItems, validateEvalSet } from './validator';
 import { formatReview } from './reviewer';
-import { writeEvalCsv, writeSidecarJson, writeReviewMarkdown } from './writers';
+import { writeEvalCsv, writeSidecarJson, writeReviewMarkdown, writeM365MultiPromptJson } from './writers';
 import { createLLMClient } from './llm-client';
 import { loadConnectorSchema, runDiagnostics, formatDiagnosticReport } from './connector-diagnostics';
 import { ApiSource, DatabaseSource, WebSource } from './sources';
@@ -31,6 +31,24 @@ interface ExtendedOptions extends CliOptions {
 
 function splitCsvOption(value: string | undefined): string[] | undefined {
   return value ? value.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined;
+}
+
+function isMultiPromptEnabled(opts: { multiPrompt?: unknown; multiPromptTurns?: unknown }): boolean {
+  return opts.multiPrompt === true || opts.multiPromptTurns !== undefined;
+}
+
+function resolveMultiPromptTurns(value: unknown, enabled: boolean): number | undefined {
+  if (!enabled) return undefined;
+  const raw = value === undefined ? 3 : Number(value);
+  if (!Number.isFinite(raw) || raw < 2) {
+    throw new Error('--multi-prompt-turns must be a number between 2 and 20');
+  }
+  return Math.max(2, Math.min(20, Math.trunc(raw)));
+}
+
+function deriveMultiPromptOutputPath(outputPath: string): string {
+  const parsed = path.parse(outputPath);
+  return path.join(parsed.dir, `${parsed.name}-multi-prompt.json`);
 }
 
 async function main(): Promise<void> {
@@ -59,8 +77,12 @@ async function main(): Promise<void> {
     .option('--m365-tenant <tenantId>', 'Microsoft Entra tenant ID for Microsoft 365 Copilot authentication')
     .option('--extensions <list>', 'Comma-separated file extensions to include when --file is a directory')
     .option('--avoid-evalsets <paths>', 'Comma-separated .evalgen.json files or directories to avoid duplicating')
+    .option('--multi-prompt', 'Also emit m365/evalscore JSON grouped into multi-prompt evaluator items')
+    .option('--multi-prompt-turns <number>', 'Prompts per multi-prompt evaluator item (2-20); enables --multi-prompt')
+    .option('--multi-prompt-output <path>', 'Output path for the multi-prompt m365/evalscore JSON document')
     .option('--dry-run', 'Profile and diagnose only, no LLM calls')
     .action(async (opts) => {
+      const multiPrompt = isMultiPromptEnabled(opts);
       const options: ExtendedOptions = {
         file: opts.file as string ?? '',
         description: opts.description as string,
@@ -75,6 +97,9 @@ async function main(): Promise<void> {
         m365TenantId: opts.m365Tenant as string | undefined,
         extensions: splitCsvOption(opts.extensions as string | undefined),
         avoidEvalsets: splitCsvOption(opts.avoidEvalsets as string | undefined),
+        multiPrompt,
+        multiPromptTurns: resolveMultiPromptTurns(opts.multiPromptTurns, multiPrompt),
+        multiPromptOutput: opts.multiPromptOutput as string | undefined,
         sourceType: opts.sourceType as ExtendedOptions['sourceType'],
         sourceUrl: opts.sourceUrl as string | undefined,
         openapiSpec: opts.openapiSpec as string | undefined,
@@ -108,9 +133,13 @@ async function main(): Promise<void> {
     .option('--m365-tenant <tenantId>', 'Microsoft Entra tenant ID for Microsoft 365 Copilot authentication')
     .option('--extensions <list>', 'Comma-separated file extensions to include when --file is a directory')
     .option('--avoid-evalsets <paths>', 'Comma-separated .evalgen.json files or directories to avoid duplicating')
+    .option('--multi-prompt', 'Also emit m365/evalscore JSON grouped into multi-prompt evaluator items')
+    .option('--multi-prompt-turns <number>', 'Prompts per multi-prompt evaluator item (2-20); enables --multi-prompt')
+    .option('--multi-prompt-output <path>', 'Output path for the multi-prompt m365/evalscore JSON document')
     .option('--dry-run', 'Profile and diagnose only, no LLM calls')
     .action(async (opts) => {
       if ((opts.file || opts.sourceType) && opts.description) {
+        const multiPrompt = isMultiPromptEnabled(opts);
         const options: ExtendedOptions = {
           file: opts.file as string ?? '',
           description: opts.description as string,
@@ -125,6 +154,9 @@ async function main(): Promise<void> {
           m365TenantId: opts.m365Tenant as string | undefined,
           extensions: splitCsvOption(opts.extensions as string | undefined),
           avoidEvalsets: splitCsvOption(opts.avoidEvalsets as string | undefined),
+          multiPrompt,
+          multiPromptTurns: resolveMultiPromptTurns(opts.multiPromptTurns, multiPrompt),
+          multiPromptOutput: opts.multiPromptOutput as string | undefined,
           sourceType: opts.sourceType as ExtendedOptions['sourceType'],
           sourceUrl: opts.sourceUrl as string | undefined,
           openapiSpec: opts.openapiSpec as string | undefined,
@@ -154,6 +186,9 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
   console.error(`  Output:      ${path.resolve(options.output)}`);
   if (options.avoidEvalsets && options.avoidEvalsets.length > 0) {
     console.error(`  Avoiding:    ${options.avoidEvalsets.map(p => path.resolve(p)).join(', ')}`);
+  }
+  if (options.multiPrompt) {
+    console.error(`  MultiPrompt: ${options.multiPromptTurns ?? 3} prompts per evaluator item`);
   }
   if (!options.dryRun) {
     console.error(`  Provider:    ${options.provider ?? 'm365-copilot'}`);
@@ -381,14 +416,31 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
   }
 
   // Write sidecar JSON (with diagnostics warnings if any)
+  const warnings = [...(diagnosticWarnings ?? []), ...avoidanceWarnings];
   const jsonPath = writeSidecarJson(validated, options.description, sourceName, options.output, {
-    warnings: [...(diagnosticWarnings ?? []), ...avoidanceWarnings],
+    warnings,
     model: options.model,
     avoidanceEvalsets: avoidanceFiles,
     avoidanceItemsCompared,
     crossRunDuplicatesRemoved,
     crossRunAssertionOverlaps,
   });
+
+  let multiPromptJsonPath: string | undefined;
+  if (options.multiPrompt) {
+    const promptsPerThread = options.multiPromptTurns ?? 3;
+    multiPromptJsonPath = writeM365MultiPromptJson(
+      validated,
+      options.description,
+      sourceName,
+      options.multiPromptOutput ?? deriveMultiPromptOutputPath(options.output),
+      {
+        promptsPerThread,
+        warnings,
+        model: options.model,
+      },
+    );
+  }
 
   let reviewPath: string | undefined;
   if (!options.noReview) {
@@ -401,6 +453,9 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
   console.log('=== EvalGen Complete ===');
   console.log(`  Eval CSV:      ${csvPath}`);
   console.log(`  Sidecar JSON:  ${jsonPath}`);
+  if (multiPromptJsonPath) {
+    console.log(`  Multi-prompt:  ${multiPromptJsonPath}`);
+  }
   if (reviewPath) {
     console.log(`  Review doc:    ${reviewPath}`);
   }
