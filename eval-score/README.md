@@ -102,6 +102,16 @@ If a specific tenant is required, use the implementation-specific tenant option:
 - Node.js: `--tenant-id <id>`
 - PowerShell: `-TenantId <id>`
 
+For direct Node.js M365 agent targeting with `--m365-agent-id`, EvalScore can also call the WorkIQ A2A endpoint directly. That path is opt-in and still leaves WorkIQ delegated auth as the default. Configure `WORK_IQ_A2A_ENDPOINT`, then choose one token source:
+
+| Token source | Configuration |
+|--------------|---------------|
+| Static bearer token | `WORK_IQ_A2A_ACCESS_TOKEN` |
+| External refresh command | `WORK_IQ_A2A_TOKEN_COMMAND` or `EVALSCORE_A2A_TOKEN_COMMAND` |
+| Built-in MSAL device-code/silent refresh | `EVALSCORE_A2A_AUTH_MODE=msal`, `EVALSCORE_A2A_CLIENT_ID`, `EVALSCORE_A2A_SCOPES`, and `--tenant-id` or `EVALSCORE_A2A_TENANT_ID` |
+
+MSAL auth is only used when explicitly selected for the Node.js A2A path. PowerShell direct A2A runs should use a static token or token command.
+
 ## Node.js Implementation
 
 ```powershell
@@ -146,4 +156,3 @@ PowerShell tests require Pester 5 or later.
 ## Git Hygiene
 
 Do not commit generated `dist` or `node_modules` directories. They are ignored by the repository `.gitignore`; regenerate them locally with `npm install` and `npm run build`.
-

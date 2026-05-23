@@ -1,6 +1,18 @@
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
+import {
+  AccountInfo,
+  AuthenticationResult,
+  Configuration,
+  DeviceCodeRequest,
+  ICachePlugin,
+  PublicClientApplication,
+  SilentFlowRequest,
+  TokenCacheContext,
+} from '@azure/msal-node';
 import { Citation } from './types';
 
 function parsePositiveIntEnv(name: string, defaultValue: number): number {
@@ -116,6 +128,10 @@ export interface WorkIQClient {
   askWithMetadata?(question: string, options?: WorkIQAskOptions): Promise<WorkIQResponse>;
   start?(tenantId?: string): Promise<void>;
   stop?(): void;
+}
+
+export interface A2ATokenProvider {
+  getToken(forceRefresh?: boolean): Promise<string>;
 }
 
 /**
@@ -362,10 +378,184 @@ export class CliWorkIQClient implements WorkIQClient {
   }
 }
 
+type A2AAuthMode = 'auto' | 'msal';
+
+export interface MsalA2ATokenProviderConfig {
+  clientId: string;
+  tenantId: string;
+  scopes: string[];
+  cachePath: string;
+  allowDeviceCode: boolean;
+}
+
+function normalizeA2AAuthMode(raw?: string): A2AAuthMode {
+  const value = raw?.trim().toLowerCase();
+  if (!value || value === 'auto') return 'auto';
+  if (value === 'msal') return 'msal';
+  throw new Error(`Unsupported A2A auth mode "${raw}". Supported values are "auto" and "msal".`);
+}
+
+function getFirstEnv(...names: string[]): string {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function parseScopeList(raw: string): string[] {
+  return raw
+    .split(/[\s,]+/)
+    .map(scope => scope.trim())
+    .filter(scope => scope.length > 0);
+}
+
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return defaultValue;
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function defaultMsalCachePath(): string {
+  return path.join(os.homedir(), '.evalscore', 'msal-a2a-cache.json');
+}
+
+class FileMsalCachePlugin implements ICachePlugin {
+  constructor(private readonly cachePath: string) {}
+
+  async beforeCacheAccess(context: TokenCacheContext): Promise<void> {
+    try {
+      const cache = await fs.promises.readFile(this.cachePath, 'utf-8');
+      context.tokenCache.deserialize(cache);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
+
+  async afterCacheAccess(context: TokenCacheContext): Promise<void> {
+    if (!context.cacheHasChanged) return;
+
+    const directory = path.dirname(this.cachePath);
+    await fs.promises.mkdir(directory, { recursive: true });
+
+    const tempPath = `${this.cachePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(tempPath, context.tokenCache.serialize(), { encoding: 'utf-8', mode: 0o600 });
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(tempPath, 0o600).catch(() => undefined);
+    }
+    await fs.promises.rename(tempPath, this.cachePath);
+  }
+}
+
+export class MsalA2ATokenProvider implements A2ATokenProvider {
+  private app?: PublicClientApplication;
+  private cachedAccessToken?: string;
+  private cachedAccessTokenExpiresOn?: Date;
+  private inFlight?: Promise<string>;
+
+  constructor(private readonly config: MsalA2ATokenProviderConfig) {}
+
+  async getToken(forceRefresh = false): Promise<string> {
+    if (!forceRefresh && this.cachedAccessToken && this.cachedAccessTokenExpiresOn) {
+      const expiresInMs = this.cachedAccessTokenExpiresOn.getTime() - Date.now();
+      if (expiresInMs > 5 * 60 * 1000) {
+        return this.cachedAccessToken;
+      }
+    }
+
+    if (!forceRefresh && this.inFlight) {
+      return this.inFlight;
+    }
+
+    const acquisition = this.acquireToken(forceRefresh).finally(() => {
+      if (this.inFlight === acquisition) {
+        this.inFlight = undefined;
+      }
+    });
+
+    if (!forceRefresh) {
+      this.inFlight = acquisition;
+    }
+
+    return acquisition;
+  }
+
+  private getApplication(): PublicClientApplication {
+    if (this.app) return this.app;
+
+    const msalConfig: Configuration = {
+      auth: {
+        clientId: this.config.clientId,
+        authority: `https://login.microsoftonline.com/${encodeURIComponent(this.config.tenantId)}`,
+      },
+      cache: {
+        cachePlugin: new FileMsalCachePlugin(this.config.cachePath),
+      },
+    };
+
+    this.app = new PublicClientApplication(msalConfig);
+    return this.app;
+  }
+
+  private async acquireToken(forceRefresh: boolean): Promise<string> {
+    const app = this.getApplication();
+    const account = await this.getCachedAccount(app);
+    let silentError: unknown;
+
+    if (account) {
+      try {
+        return this.saveResult(await app.acquireTokenSilent({
+          account,
+          scopes: this.config.scopes,
+          forceRefresh,
+        } as SilentFlowRequest));
+      } catch (err) {
+        silentError = err;
+      }
+    }
+
+    if (!this.config.allowDeviceCode) {
+      const reason = silentError instanceof Error ? ` Silent token acquisition failed: ${silentError.message}` : '';
+      throw new Error(
+        'MSAL A2A auth requires an interactive device-code sign-in, but this process is non-interactive.' +
+        `${reason} Run eval-score once in an interactive terminal, or configure WORK_IQ_A2A_TOKEN_COMMAND instead.`
+      );
+    }
+
+    const deviceRequest: DeviceCodeRequest = {
+      scopes: this.config.scopes,
+      deviceCodeCallback: response => {
+        console.error(response.message);
+      },
+    };
+    const result = await app.acquireTokenByDeviceCode(deviceRequest);
+    return this.saveResult(result);
+  }
+
+  private async getCachedAccount(app: PublicClientApplication): Promise<AccountInfo | undefined> {
+    const accounts = await app.getAllAccounts();
+    return accounts[0];
+  }
+
+  private saveResult(result: AuthenticationResult | null): string {
+    if (!result?.accessToken) {
+      throw new Error('MSAL A2A auth did not return an access token.');
+    }
+    this.cachedAccessToken = result.accessToken;
+    this.cachedAccessTokenExpiresOn = result.expiresOn ?? undefined;
+    return result.accessToken;
+  }
+}
+
 export class A2AWorkIQClient implements WorkIQClient {
   private endpoint: string;
   private accessToken: string;
   private tokenCommand: string;
+  private authMode: A2AAuthMode;
+  private tokenProvider?: A2ATokenProvider;
+  private tenantId?: string;
   private timeoutMs: number;
   private maxAttempts: number;
   private backoffBaseMs: number;
@@ -378,16 +568,27 @@ export class A2AWorkIQClient implements WorkIQClient {
     maxAttempts?: number;
     backoffBaseMs?: number;
     tokenCommand?: string;
+    authMode?: string;
+    tokenProvider?: A2ATokenProvider;
   }) {
     this.endpoint = (options?.endpoint ?? process.env.WORK_IQ_A2A_ENDPOINT ?? '').replace(/\/+$/, '');
     this.accessToken = options?.accessToken ?? process.env.WORK_IQ_A2A_ACCESS_TOKEN ?? '';
     this.tokenCommand = options?.tokenCommand ?? process.env.WORK_IQ_A2A_TOKEN_COMMAND ?? process.env.EVALSCORE_A2A_TOKEN_COMMAND ?? '';
+    this.authMode = normalizeA2AAuthMode(
+      options?.authMode ??
+      process.env.EVALSCORE_A2A_AUTH_MODE ??
+      process.env.WORK_IQ_A2A_AUTH_MODE ??
+      process.env.EVALSCORE_A2A_AUTH ??
+      process.env.WORK_IQ_A2A_AUTH
+    );
+    this.tokenProvider = options?.tokenProvider;
     this.timeoutMs = options?.timeoutMs ?? parseTimeoutMsEnv();
     this.maxAttempts = Math.max(1, options?.maxAttempts ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_MAX_ATTEMPTS', 3));
     this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_BACKOFF_MS', 2000));
   }
 
-  async start(): Promise<void> {
+  async start(tenantId?: string): Promise<void> {
+    this.tenantId = tenantId;
     this.validateConfig();
   }
 
@@ -397,6 +598,7 @@ export class A2AWorkIQClient implements WorkIQClient {
   }
 
   async askWithMetadata(question: string, options?: WorkIQAskOptions): Promise<WorkIQResponse> {
+    this.tenantId = options?.tenantId ?? this.tenantId;
     this.validateConfig();
     if (!options?.agentId) {
       throw new Error('M365 agent ID targeting requires an agentId.');
@@ -414,9 +616,48 @@ export class A2AWorkIQClient implements WorkIQClient {
     if (!this.endpoint) {
       throw new Error('M365 agent ID targeting requires WORK_IQ_A2A_ENDPOINT.');
     }
-    if (!this.accessToken && !this.tokenCommand) {
-      throw new Error('M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN or WORK_IQ_A2A_TOKEN_COMMAND.');
+    if (this.authMode === 'msal') {
+      if (!this.tokenProvider) {
+        this.validateMsalConfig();
+      }
+      return;
     }
+    if (!this.accessToken && !this.tokenCommand && !this.tokenProvider) {
+      throw new Error(
+        'M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN, WORK_IQ_A2A_TOKEN_COMMAND, ' +
+        'or EVALSCORE_A2A_AUTH_MODE=msal.'
+      );
+    }
+  }
+
+  private validateMsalConfig(): void {
+    const missing = this.getMsalConfigMissingFields();
+    if (missing.length > 0) {
+      throw new Error(
+        `MSAL A2A auth requires ${missing.join(', ')}. ` +
+        'Set EVALSCORE_A2A_CLIENT_ID, EVALSCORE_A2A_TENANT_ID or --tenant-id, and EVALSCORE_A2A_SCOPES.'
+      );
+    }
+  }
+
+  private getMsalConfigMissingFields(): string[] {
+    const config = this.getMsalConfig();
+    const missing: string[] = [];
+    if (!config.clientId) missing.push('client ID');
+    if (!config.tenantId) missing.push('tenant ID');
+    if (config.scopes.length === 0) missing.push('scopes');
+    return missing;
+  }
+
+  private getMsalConfig(): MsalA2ATokenProviderConfig {
+    const scopesRaw = getFirstEnv('EVALSCORE_A2A_SCOPES', 'WORK_IQ_A2A_SCOPES');
+    return {
+      clientId: getFirstEnv('EVALSCORE_A2A_CLIENT_ID', 'WORK_IQ_A2A_CLIENT_ID'),
+      tenantId: this.tenantId ?? getFirstEnv('EVALSCORE_A2A_TENANT_ID', 'WORK_IQ_A2A_TENANT_ID', 'EVALSCORE_TENANT_ID', 'TENANT_ID'),
+      scopes: parseScopeList(scopesRaw),
+      cachePath: getFirstEnv('EVALSCORE_A2A_TOKEN_CACHE_PATH', 'WORK_IQ_A2A_TOKEN_CACHE_PATH') || defaultMsalCachePath(),
+      allowDeviceCode: parseBooleanEnv('EVALSCORE_A2A_ALLOW_DEVICE_CODE', process.stderr.isTTY === true),
+    };
   }
 
   private async resolveAgentUrl(agentId: string): Promise<string> {
@@ -521,7 +762,7 @@ export class A2AWorkIQClient implements WorkIQClient {
       signal: AbortSignal.timeout(this.timeoutMs),
     });
 
-    if (response.status === 401 && this.tokenCommand) {
+    if (response.status === 401 && this.canForceRefreshToken()) {
       const refreshedToken = await this.getAccessToken(true);
       response = await fetch(agentUrl, {
         method: 'POST',
@@ -557,8 +798,16 @@ export class A2AWorkIQClient implements WorkIQClient {
     };
   }
 
+  private canForceRefreshToken(): boolean {
+    return this.authMode === 'msal' || !!this.tokenCommand || !!this.tokenProvider;
+  }
+
   private async getAccessToken(forceRefresh = false): Promise<string> {
+    if (this.authMode === 'msal') {
+      return this.getTokenProvider().getToken(forceRefresh);
+    }
     if (this.accessToken && !forceRefresh) return this.accessToken;
+    if (this.tokenProvider) return this.tokenProvider.getToken(forceRefresh);
     if (!this.tokenCommand) return this.accessToken;
     const token = (await runShellCommand(this.tokenCommand)).trim();
     if (!token) {
@@ -566,6 +815,14 @@ export class A2AWorkIQClient implements WorkIQClient {
     }
     this.accessToken = token;
     return token;
+  }
+
+  private getTokenProvider(): A2ATokenProvider {
+    if (!this.tokenProvider) {
+      this.validateMsalConfig();
+      this.tokenProvider = new MsalA2ATokenProvider(this.getMsalConfig());
+    }
+    return this.tokenProvider;
   }
 }
 

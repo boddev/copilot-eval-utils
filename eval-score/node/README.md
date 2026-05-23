@@ -78,11 +78,34 @@ eval-score `
 | `--system-prompt <text>` | No | Text prepended to each prompt |
 | `--system-prompt-file <path>` | No | File containing a system prompt |
 | `--connector-id <id>` | No | Microsoft 365 Copilot connector ID to target in the WorkIQ prompt context |
+| `--m365-agent-id <id>` | No | Direct M365 Copilot agent ID target; uses WorkIQ A2A auth settings below |
 | `--output-dir <path>` | No | Output directory; default `./output` |
 | `--threshold <number>` | No | Pass/fail threshold, 0–100; default `70` |
 | `--tenant-id <id>` | No | Microsoft 365 tenant ID for WorkIQ |
 | `--setup` | No | Run preflight checks only |
 | `--skip-preflight` | No | Skip setup checks |
+
+## Direct M365 Agent Targeting and Auth
+
+By default, EvalScore uses WorkIQ MCP delegated auth. Supplying `--m365-agent-id` switches the Node implementation to direct WorkIQ A2A calls for the actual response, while WorkIQ MCP remains available for default scoring.
+
+Direct A2A requires `WORK_IQ_A2A_ENDPOINT` plus one token source:
+
+```powershell
+# Option 1: static token
+$env:WORK_IQ_A2A_ACCESS_TOKEN = "<bearer-token>"
+
+# Option 2: external refresh command
+$env:EVALSCORE_A2A_TOKEN_COMMAND = "your-command-that-prints-a-token"
+
+# Option 3: built-in MSAL, explicitly opt in
+$env:EVALSCORE_A2A_AUTH_MODE = "msal"
+$env:EVALSCORE_A2A_CLIENT_ID = "<public-client-app-id>"
+$env:EVALSCORE_A2A_SCOPES = "<scope-1> <scope-2>"
+$env:EVALSCORE_A2A_TENANT_ID = "<tenant-id>"
+```
+
+MSAL uses device-code sign-in only when a silent cached token is not available and the process is interactive. In non-interactive runs, seed the cache in an interactive terminal first or use a token command. The cache defaults to `%USERPROFILE%\.evalscore\msal-a2a-cache.json`; override it with `EVALSCORE_A2A_TOKEN_CACHE_PATH` if needed. The cache contains authentication material, so store it only in a user-private location.
 
 ## Input Columns
 
@@ -142,4 +165,3 @@ npx vitest run -t "score clamping"
 ```
 
 Do not commit `node_modules` or `dist`; both are generated and ignored.
-
