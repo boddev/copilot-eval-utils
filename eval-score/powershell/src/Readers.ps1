@@ -4,12 +4,15 @@
 $script:HeaderAliases = @{
     'prompt'           = 'Prompt'
     'question'         = 'Prompt'
+    'expected_response'= 'ExpectedAnswer'
     'expected_answer'  = 'ExpectedAnswer'
     'expected answer'  = 'ExpectedAnswer'
     'expectedanswer'   = 'ExpectedAnswer'
     'actual_answer'    = 'ActualAnswer'
     'actual answer'    = 'ActualAnswer'
     'actualanswer'     = 'ActualAnswer'
+    'response'         = 'ActualAnswer'
+    'context'          = 'Context'
     'source_location'  = 'SourceLocation'
     'source location'  = 'SourceLocation'
     'sourcelocation'   = 'SourceLocation'
@@ -57,6 +60,7 @@ function ConvertTo-EvalRow {
             'ExpectedAnswer' { $row.ExpectedAnswer = if ($null -ne $value) { [string]$value } else { '' } }
             'SourceLocation' { $row.SourceLocation = if ($null -ne $value) { [string]$value } else { '' } }
             'ActualAnswer'   { $row.ActualAnswer = if ($null -ne $value -and "$value" -ne '') { [string]$value } else { '' } }
+            'Context'        { $row.Context = if ($null -ne $value) { [string]$value } else { '' } }
             'SimilarityScore' {
                 if ($null -ne $value -and "$value" -ne '') {
                     $row.SimilarityScore = [int]$value
@@ -285,8 +289,62 @@ function Read-JsonEval {
     $content = Get-Content -LiteralPath $Path -Raw
     $data = $content | ConvertFrom-Json
 
+    if ($data.PSObject.Properties['items']) {
+        $rows = @()
+        $defaultEvaluators = if ($data.PSObject.Properties['default_evaluators']) { ConvertTo-Hashtable $data.default_evaluators } else { @{} }
+        for ($itemIndex = 0; $itemIndex -lt @($data.items).Count; $itemIndex++) {
+            $item = @($data.items)[$itemIndex]
+            if ($item.PSObject.Properties['turns'] -and @($item.turns).Count -gt 0) {
+                for ($turnIndex = 0; $turnIndex -lt @($item.turns).Count; $turnIndex++) {
+                    $turn = @($item.turns)[$turnIndex]
+                    $row = [EvalRow]::new()
+                    $row.Prompt = "$($turn.prompt)"
+                    $row.ExpectedAnswer = if ($turn.PSObject.Properties['expected_response']) { "$($turn.expected_response)" } elseif ($turn.PSObject.Properties['expected_answer']) { "$($turn.expected_answer)" } elseif ($item.PSObject.Properties['expected_response']) { "$($item.expected_response)" } else { "$($item.expected_answer)" }
+                    $row.SourceLocation = if ($turn.PSObject.Properties['source_location']) { "$($turn.source_location)" } elseif ($item.PSObject.Properties['source_location']) { "$($item.source_location)" } else { '' }
+                    $row.ActualAnswer = if ($turn.PSObject.Properties['response']) { "$($turn.response)" } elseif ($turn.PSObject.Properties['actual_answer']) { "$($turn.actual_answer)" } else { '' }
+                    $row.Context = if ($turn.PSObject.Properties['context']) { "$($turn.context)" } elseif ($item.PSObject.Properties['context']) { "$($item.context)" } else { $row.SourceLocation }
+                    $row.Id = if ($item.PSObject.Properties['id']) { "$($item.id)" } elseif ($item.PSObject.Properties['name']) { "$($item.name)" } else { "item-$($itemIndex + 1)" }
+                    $row.ItemIndex = $itemIndex
+                    $row.TurnIndex = $turnIndex
+                    $row.ThreadId = $row.Id
+                    $row.ThreadName = if ($item.PSObject.Properties['name']) { "$($item.name)" } else { '' }
+                    $row.ThreadDescription = if ($item.PSObject.Properties['description']) { "$($item.description)" } else { '' }
+                    $row.ConversationId = if ($item.PSObject.Properties['conversation_id']) { "$($item.conversation_id)" } else { '' }
+                    $row.DocumentDefaultEvaluators = $defaultEvaluators
+                    $row.EvaluatorsMap = if ($turn.PSObject.Properties['evaluators']) { ConvertTo-Hashtable $turn.evaluators } elseif ($item.PSObject.Properties['evaluators']) { ConvertTo-Hashtable $item.evaluators } else { @{} }
+                    $row.EvaluatorsMode = if ($turn.PSObject.Properties['evaluators_mode']) { "$($turn.evaluators_mode)" } elseif ($item.PSObject.Properties['evaluators_mode']) { "$($item.evaluators_mode)" } else { '' }
+                    $rows += $row
+                }
+            } else {
+                $row = [EvalRow]::new()
+                $row.Prompt = "$($item.prompt)"
+                $row.ExpectedAnswer = if ($item.PSObject.Properties['expected_response']) { "$($item.expected_response)" } else { "$($item.expected_answer)" }
+                $row.SourceLocation = if ($item.PSObject.Properties['source_location']) { "$($item.source_location)" } else { '' }
+                $row.ActualAnswer = if ($item.PSObject.Properties['response']) { "$($item.response)" } elseif ($item.PSObject.Properties['actual_answer']) { "$($item.actual_answer)" } else { '' }
+                $row.Context = if ($item.PSObject.Properties['context']) { "$($item.context)" } else { $row.SourceLocation }
+                $row.Id = if ($item.PSObject.Properties['id']) { "$($item.id)" } else { "item-$($itemIndex + 1)" }
+                $row.ItemIndex = $itemIndex
+                $row.DocumentDefaultEvaluators = $defaultEvaluators
+                $row.EvaluatorsMap = if ($item.PSObject.Properties['evaluators']) { ConvertTo-Hashtable $item.evaluators } else { @{} }
+                $row.EvaluatorsMode = if ($item.PSObject.Properties['evaluators_mode']) { "$($item.evaluators_mode)" } else { '' }
+                $rows += $row
+            }
+        }
+        return [EvalRow[]]$rows
+    }
+
     if ($data -isnot [System.Collections.IEnumerable] -or $data -is [string]) {
         throw "JSON file must contain an array of objects: $Path"
+    }
+
+    function ConvertTo-Hashtable {
+        param([object]$InputObject)
+        $hash = @{}
+        if ($null -eq $InputObject) { return $hash }
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $hash[$prop.Name] = $prop.Value
+        }
+        return $hash
     }
 
     $records = @($data)

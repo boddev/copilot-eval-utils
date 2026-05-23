@@ -1,8 +1,8 @@
 import { spawn } from 'child_process';
-import { EvalRow, JudgeProvider, MetricResult } from './types';
+import { EvalRow, EvaluatorName, JudgeProvider, MetricResult } from './types';
 import { WorkIQClient } from './workiq-client';
 
-export const SEMANTIC_RUBRIC_VERSION = 'evalscore-semantic-v1';
+export const RUBRIC_VERSION = 'evalscore-m365-rubrics-v1';
 
 export interface JudgeScore {
   score: number;
@@ -13,21 +13,27 @@ export interface JudgeScore {
 export interface Judge {
   provider: JudgeProvider;
   model?: string;
-  score(row: EvalRow): Promise<JudgeScore>;
+  score(row: EvalRow, evaluator?: EvaluatorName): Promise<JudgeScore>;
 }
 
-export function buildSemanticScoringPrompt(row: EvalRow, jsonResponse = false): string {
+export function buildScoringPrompt(row: EvalRow, evaluator: EvaluatorName = 'Similarity', jsonResponse = false): string {
   const responseInstruction = jsonResponse
     ? 'Respond with strict JSON: {"score": number, "reason": "short rationale"}.'
     : 'Respond with ONLY a single number between 0 and 100, nothing else.';
+  const normalizedEvaluator = evaluator === 'SemanticSimilarity' ? 'Similarity' : evaluator;
+  const rubric = RUBRICS[normalizedEvaluator] ?? RUBRICS.Similarity;
 
   return [
-    'Compare the following two answers for semantic similarity.',
-    'Consider whether they convey the same meaning and information, even if worded differently.',
-    'Rate the similarity on a scale from 0 to 100, where 0 means completely different and 100 means identical in meaning.',
+    `Evaluate the response using the ${normalizedEvaluator} rubric.`,
+    rubric,
+    'Use a 0 to 100 scale where 0 is unusable and 100 is excellent for this rubric.',
     responseInstruction,
     '',
-    `Expected Answer: ${row.expectedAnswer}`,
+    `Prompt: ${row.prompt}`,
+    '',
+    `Expected or Ground-Truth Response: ${row.expectedAnswer}`,
+    '',
+    `Context / Source: ${row.context ?? row.sourceLocation ?? ''}`,
     '',
     `Actual Answer: ${row.actualAnswer}`,
   ].join('\n');
@@ -63,8 +69,8 @@ export class WorkIQJudge implements Judge {
 
   constructor(private client: WorkIQClient, private tenantId?: string) {}
 
-  async score(row: EvalRow): Promise<JudgeScore> {
-    const prompt = buildSemanticScoringPrompt(row);
+  async score(row: EvalRow, evaluator: EvaluatorName = 'Similarity'): Promise<JudgeScore> {
+    const prompt = buildScoringPrompt(row, evaluator);
     const response = await this.client.ask(prompt, this.tenantId);
     return parseJudgeScore(response);
   }
@@ -74,7 +80,7 @@ export class GitHubCopilotJudge implements Judge {
   provider: JudgeProvider = 'github-copilot';
   model = process.env.EVALSCORE_GITHUB_COPILOT_MODEL;
 
-  async score(row: EvalRow): Promise<JudgeScore> {
+  async score(row: EvalRow, evaluator: EvaluatorName = 'Similarity'): Promise<JudgeScore> {
     const command = process.env.EVALSCORE_GITHUB_COPILOT_COMMAND;
     if (!command) {
       throw new Error(
@@ -83,7 +89,7 @@ export class GitHubCopilotJudge implements Judge {
       );
     }
 
-    const response = await runPromptCommand(command, buildSemanticScoringPrompt(row, true));
+    const response = await runPromptCommand(command, buildScoringPrompt(row, evaluator, true));
     const parsed = parseJudgeScore(response);
     return { ...parsed, model: parsed.model ?? this.model };
   }
@@ -103,7 +109,7 @@ export class AzureOpenAIJudge implements Judge {
     this.model = process.env.AZURE_OPENAI_DEPLOYMENT ?? process.env.AZURE_AI_MODEL_NAME ?? '';
   }
 
-  async score(row: EvalRow): Promise<JudgeScore> {
+  async score(row: EvalRow, evaluator: EvaluatorName = 'Similarity'): Promise<JudgeScore> {
     if (!this.endpoint || !this.apiKey || !this.apiVersion || !this.model) {
       throw new Error(
         'Azure OpenAI judging requires AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, ' +
@@ -122,7 +128,7 @@ export class AzureOpenAIJudge implements Judge {
         temperature: 0,
         messages: [
           { role: 'system', content: 'You are a strict evaluation judge. Return only valid JSON.' },
-          { role: 'user', content: buildSemanticScoringPrompt(row, true) },
+          { role: 'user', content: buildScoringPrompt(row, evaluator, true) },
         ],
       }),
     });
@@ -155,19 +161,27 @@ export function createJudge(provider: JudgeProvider, client: WorkIQClient, tenan
   }
 }
 
-export function metricFromJudge(score: JudgeScore, judge: Judge, threshold?: number): MetricResult {
+export function metricFromJudge(score: JudgeScore, judge: Judge, threshold?: number, evaluator: EvaluatorName = 'Similarity'): MetricResult {
   return {
-    name: 'SemanticSimilarity',
+    name: evaluator === 'SemanticSimilarity' ? 'Similarity' : evaluator,
     score: score.score,
     passed: threshold === undefined ? undefined : score.score >= threshold,
     reason: score.reason,
     provider: judge.provider,
     model: score.model ?? judge.model,
     scale: '0-100',
-    rubricVersion: SEMANTIC_RUBRIC_VERSION,
+    rubricVersion: RUBRIC_VERSION,
     threshold,
   };
 }
+
+const RUBRICS: Partial<Record<EvaluatorName, string>> = {
+  Relevance: 'Measure whether the response directly addresses the user query and includes the important points needed to answer it. Penalize off-topic, incomplete, or insufficient answers.',
+  Coherence: 'Measure whether the response is logically organized, internally consistent, fluent, and easy to follow. Penalize contradictions, confusing structure, or unreadable wording.',
+  Groundedness: 'Measure whether claims in the response are supported by the provided context/source or expected answer. Penalize unsupported claims, hallucinations, or missing source support.',
+  Similarity: 'Measure semantic alignment between the actual response and the ground-truth response for the prompt. Wording can differ, but meaning and important facts should match.',
+  SemanticSimilarity: 'Measure semantic alignment between the actual response and the ground-truth response for the prompt. Wording can differ, but meaning and important facts should match.',
+};
 
 function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));

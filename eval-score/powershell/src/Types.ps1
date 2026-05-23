@@ -10,6 +10,18 @@ class EvalRow {
     [object[]]$Citations
     [object]$ResponseMetadata
     [string]$ConversationId
+    [string]$Id
+    [Nullable[int]]$ItemIndex
+    [Nullable[int]]$TurnIndex
+    [string]$ThreadId
+    [string]$ThreadName
+    [string]$ThreadDescription
+    [string]$Context
+    [hashtable]$DocumentDefaultEvaluators
+    [hashtable]$EvaluatorsMap
+    [string]$EvaluatorsMode
+    [string]$Status
+    [object]$Error
 
     EvalRow() {
         $this.Prompt = ''
@@ -21,6 +33,18 @@ class EvalRow {
         $this.Citations = @()
         $this.ResponseMetadata = $null
         $this.ConversationId = ''
+        $this.Id = ''
+        $this.ItemIndex = $null
+        $this.TurnIndex = $null
+        $this.ThreadId = ''
+        $this.ThreadName = ''
+        $this.ThreadDescription = ''
+        $this.Context = ''
+        $this.DocumentDefaultEvaluators = @{}
+        $this.EvaluatorsMap = @{}
+        $this.EvaluatorsMode = ''
+        $this.Status = ''
+        $this.Error = $null
     }
 
     EvalRow([string]$prompt, [string]$expectedAnswer, [string]$sourceLocation, [string]$actualAnswer) {
@@ -33,6 +57,18 @@ class EvalRow {
         $this.Citations = @()
         $this.ResponseMetadata = $null
         $this.ConversationId = ''
+        $this.Id = ''
+        $this.ItemIndex = $null
+        $this.TurnIndex = $null
+        $this.ThreadId = ''
+        $this.ThreadName = ''
+        $this.ThreadDescription = ''
+        $this.Context = ''
+        $this.DocumentDefaultEvaluators = @{}
+        $this.EvaluatorsMap = @{}
+        $this.EvaluatorsMode = ''
+        $this.Status = ''
+        $this.Error = $null
     }
 }
 
@@ -58,7 +94,7 @@ class EvalResult {
         $this.AgentId = ''
         $this.ConnectorId = ''
         $this.JudgeProvider = 'workiq'
-        $this.Evaluators = @('SemanticSimilarity')
+        $this.Evaluators = @('Relevance', 'Coherence')
     }
 }
 
@@ -106,7 +142,7 @@ class CliOptions {
         $this.M365AgentId = ''
         $this.ConnectorId = ''
         $this.JudgeProvider = 'workiq'
-        $this.Evaluators = 'SemanticSimilarity'
+        $this.Evaluators = 'Relevance,Coherence'
         $this.Concurrency = 1
         $this.DelayMs = 500
     }

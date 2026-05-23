@@ -2,6 +2,8 @@ import { EvalRow, EvaluatorName, MetricResult, ScoringResult } from './types';
 import { evaluateRowAssertions } from './assertion-checker';
 import { createJudge, Judge, metricFromJudge } from './judge-providers';
 import { WorkIQClient } from './workiq-client';
+import { DEFAULT_M365_EVALUATORS, deriveRowStatus, resolveRowEvaluators, setRowError } from './eval-document';
+import { createThrottleGate } from './throttle-gate';
 
 const DELAY_MS = 500;
 
@@ -26,9 +28,10 @@ export async function scoreAnswers(
 ): Promise<EvalRow[]> {
   const total = rows.length;
   const judge = options?.judge ?? createJudge(options?.judgeProvider ?? 'workiq', client, options?.tenantId);
-  const evaluators = options?.evaluators ?? ['SemanticSimilarity'];
+  const evaluators = options?.evaluators ?? DEFAULT_M365_EVALUATORS;
   const concurrency = Math.max(1, Math.min(options?.concurrency ?? 1, total || 1));
   const delayMs = Math.max(0, options?.delayMs ?? DELAY_MS);
+  const throttleGate = createThrottleGate(concurrency);
   let nextIndex = 0;
   let completed = rows.filter(row => row.similarityScore !== undefined).length;
 
@@ -41,8 +44,10 @@ export async function scoreAnswers(
 
     if (!row.actualAnswer || row.actualAnswer.startsWith('[ERROR:')) {
       row.similarityScore = 0;
+      const effectiveEvaluators = resolveRowEvaluators(row, evaluators);
+      const primary = firstLlmEvaluator(effectiveEvaluators) ?? 'Similarity';
       row.metrics = mergeMetrics(row.metrics, [{
-        name: 'SemanticSimilarity',
+        name: primary,
         score: 0,
         passed: false,
         reason: !row.actualAnswer ? 'Actual answer is empty.' : 'Actual answer contains an error.',
@@ -51,6 +56,7 @@ export async function scoreAnswers(
         scale: '0-100',
         threshold: options?.threshold,
       }]);
+      setRowError(row, row.actualAnswer ? 'agentRequestFailed' : 'turnSkipped', !row.actualAnswer ? 'Actual answer is empty.' : row.actualAnswer);
       completed++;
       options?.onProgress?.(i + 1, total);
       process.stderr.write(`\rScoring answer ${i + 1}/${total}...`);
@@ -61,17 +67,24 @@ export async function scoreAnswers(
     process.stderr.write(`\rScoring answer ${i + 1}/${total}...`);
 
     try {
-      const score = await judge.score(row);
-      row.similarityScore = score.score;
-      const metrics: MetricResult[] = [metricFromJudge(score, judge, options?.threshold)];
-      metrics.push(...evaluateDeterministicMetrics(row, evaluators, options?.threshold));
+      const effectiveEvaluators = resolveRowEvaluators(row, evaluators);
+      const metrics: MetricResult[] = [];
+      const llmEvaluators = effectiveEvaluators.filter(isLlmEvaluator);
+      for (const evaluator of llmEvaluators) {
+        const score = await throttleGate.run(() => judge.score(row, evaluator));
+        metrics.push(metricFromJudge(score, judge, options?.threshold, evaluator));
+      }
+      const primaryMetric = metrics.find(metric => metric.name === 'Similarity') ?? metrics.find(metric => metric.name === 'SemanticSimilarity') ?? metrics[0];
+      row.similarityScore = primaryMetric?.score ?? 0;
+      metrics.push(...evaluateDeterministicMetrics(row, effectiveEvaluators, options?.threshold));
       row.metrics = mergeMetrics(row.metrics, metrics);
+      row.status = deriveRowStatus(row, options?.threshold);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`\nWarning: Scoring failed for row ${i + 1}: ${message}, setting to 0\n`);
       row.similarityScore = 0;
       row.metrics = mergeMetrics(row.metrics, [{
-        name: 'SemanticSimilarity',
+        name: firstLlmEvaluator(resolveRowEvaluators(row, evaluators)) ?? 'Similarity',
         score: 0,
         passed: false,
         reason: message,
@@ -80,6 +93,7 @@ export async function scoreAnswers(
         scale: '0-100',
         threshold: options?.threshold,
       }]);
+      setRowError(row, 'evaluatorsFailed', message);
     }
 
     completed++;
@@ -141,8 +155,9 @@ export function calculateScoringResult(rows: EvalRow[], passThreshold: number): 
 }
 
 export function parseEvaluators(value?: string): EvaluatorName[] {
-  if (!value) return ['SemanticSimilarity'];
+  if (!value) return DEFAULT_M365_EVALUATORS;
   const all: EvaluatorName[] = [
+    'Similarity',
     'SemanticSimilarity',
     'Relevance',
     'Coherence',
@@ -153,6 +168,8 @@ export function parseEvaluators(value?: string): EvaluatorName[] {
     'EvalGenAssertions',
   ];
   const aliases = new Map<string, EvaluatorName>(all.map(name => [name.toLowerCase(), name]));
+  aliases.set('semantic', 'Similarity');
+  aliases.set('semanticsimilarity', 'Similarity');
   const parts = value.split(',').map(part => part.trim()).filter(Boolean);
   const names: EvaluatorName[] = [];
   for (const part of parts) {
@@ -163,7 +180,7 @@ export function parseEvaluators(value?: string): EvaluatorName[] {
     }
     if (!names.includes(name)) names.push(name);
   }
-  return names.length > 0 ? names : ['SemanticSimilarity'];
+  return names.length > 0 ? names : DEFAULT_M365_EVALUATORS;
 }
 
 function evaluateDeterministicMetrics(row: EvalRow, evaluators: EvaluatorName[], threshold?: number): MetricResult[] {
@@ -238,4 +255,16 @@ function mergeMetrics(existing: MetricResult[] | undefined, next: MetricResult[]
 
 function normalize(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isLlmEvaluator(evaluator: EvaluatorName): boolean {
+  return evaluator === 'Similarity' ||
+    evaluator === 'SemanticSimilarity' ||
+    evaluator === 'Relevance' ||
+    evaluator === 'Coherence' ||
+    evaluator === 'Groundedness';
+}
+
+function firstLlmEvaluator(evaluators: EvaluatorName[]): EvaluatorName | undefined {
+  return evaluators.find(isLlmEvaluator);
 }

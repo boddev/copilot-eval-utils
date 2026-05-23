@@ -228,3 +228,57 @@ export async function writeReport(
 
   return outputPath;
 }
+
+export function generateHtmlReport(evalResult: EvalResult, scoringResult: ScoringResult): string {
+  const rows = evalResult.rows.map((row, index) => {
+    const status = row.status ?? ((row.similarityScore ?? 0) >= scoringResult.passThreshold ? 'pass' : 'fail');
+    return `<tr><td>${index + 1}</td><td>${escapeHtml(status)}</td><td>${row.similarityScore ?? ''}</td><td>${escapeHtml(truncate(row.prompt, 120))}</td><td>${escapeHtml(truncate(row.actualAnswer, 200))}</td></tr>`;
+  }).join('\n');
+
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<title>EvalScore Report</title>',
+    '<style>body{font-family:Segoe UI,Arial,sans-serif;margin:2rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.5rem;vertical-align:top}.pass{color:#107c10}.fail,.error{color:#a4262c}.partial{color:#8a6d00}</style>',
+    '</head>',
+    '<body>',
+    '<h1>Evaluation Report</h1>',
+    '<section>',
+    `<p><strong>Input:</strong> ${escapeHtml(evalResult.inputFile)}</p>`,
+    `<p><strong>Average score:</strong> ${scoringResult.averageScore.toFixed(1)} / 100</p>`,
+    `<p><strong>Pass rate:</strong> ${scoringResult.passCount}/${scoringResult.totalQuestions}</p>`,
+    `<p><strong>Judge:</strong> ${escapeHtml(evalResult.judgeProvider ?? '')}</p>`,
+    '</section>',
+    '<table>',
+    '<thead><tr><th>#</th><th>Status</th><th>Score</th><th>Prompt</th><th>Actual response</th></tr></thead>',
+    `<tbody>${rows}</tbody>`,
+    '</table>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+}
+
+export async function writeHtmlReport(
+  html: string,
+  outputDir: string,
+  inputFile: string,
+): Promise<string> {
+  await fs.mkdir(outputDir, { recursive: true });
+
+  const baseName = path.basename(inputFile, path.extname(inputFile));
+  const outputPath = path.join(outputDir, `${baseName}-report.html`);
+
+  await fs.writeFile(outputPath, html, 'utf-8');
+
+  return outputPath;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}

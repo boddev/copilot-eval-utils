@@ -29,7 +29,7 @@ Describe 'Write-CsvEval - round-trip' {
 }
 
 Describe 'Write-JsonEval' {
-    It 'outputs JSON with snake_case keys' {
+    It 'outputs schema-native JSON with snake_case turn keys' {
         $rows = @(
             [EvalRow]::new('What is 2+2?', '4', 'math.md', 'Four')
         )
@@ -41,12 +41,13 @@ Describe 'Write-JsonEval' {
         $content = Get-Content -Path $outPath -Raw
         $parsed = $content | ConvertFrom-Json
 
-        $first = @($parsed)[0]
+        $parsed.schemaVersion | Should -Be '1.4.0'
+        $first = @($parsed.items)[0]
         $first.prompt | Should -Be 'What is 2+2?'
-        $first.expected_answer | Should -Be '4'
-        $first.source_location | Should -Be 'math.md'
-        $first.actual_answer | Should -Be 'Four'
-        $first.similarity_score | Should -Be 90
+        $first.expected_response | Should -Be '4'
+        $first.context | Should -Be 'math.md'
+        $first.response | Should -Be 'Four'
+        $first.extensions.evalscore.canonical_score_0_100 | Should -Be 90
     }
 }
 
@@ -58,7 +59,7 @@ Describe 'Write-EvalFile' {
 
         $outputPath = Write-EvalFile -Rows $rows -InputFile 'test.csv' -OutputDir $TestDrive -Format 'csv'
 
-        $outputPath | Should -Match 'test-results\.csv$'
+        $outputPath | Should -Match 'test-results\.json$'
         Test-Path $outputPath | Should -BeTrue
     }
 }

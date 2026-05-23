@@ -1,20 +1,21 @@
 import * as fs from 'fs';
-import { EvalRow } from '../types';
+import { EvalRow, EvaluatorMap, EvaluatorName } from '../types';
+import { rowsToEvalDocument } from '../eval-document';
 
-export async function writeJson(rows: EvalRow[], outputPath: string): Promise<void> {
-  const records = rows.map((row) => ({
-    prompt: row.prompt,
-    expected_answer: row.expectedAnswer,
-    source_location: row.sourceLocation,
-    actual_answer: row.actualAnswer,
-    similarity_score: row.similarityScore ?? null,
-    metrics: row.metrics,
-    citations: row.citations,
-    conversation_id: row.conversationId,
-    response_metadata: row.responseMetadata,
-    assertions: row.assertions,
-    assertion_results: row.assertionResults,
-  }));
+export async function writeJson(
+  rows: EvalRow[],
+  outputPath: string,
+  options?: {
+    metadata?: Record<string, unknown>;
+    defaultEvaluators?: EvaluatorMap;
+    threshold?: number;
+    inputFile?: string;
+    target?: unknown;
+    judgeProvider?: string;
+    runEvaluators?: EvaluatorName[];
+  },
+): Promise<void> {
+  const document = rowsToEvalDocument(rows, options);
 
-  fs.writeFileSync(outputPath, JSON.stringify(records, null, 2), 'utf-8');
+  fs.writeFileSync(outputPath, JSON.stringify(document, null, 2), 'utf-8');
 }

@@ -6,7 +6,7 @@ function Invoke-Scoring {
         [string]$TenantId,
         [ValidateSet('workiq', 'github-copilot', 'azure-openai')]
         [string]$JudgeProvider = 'workiq',
-        [string[]]$Evaluators = @('SemanticSimilarity'),
+        [string[]]$Evaluators = @('Relevance', 'Coherence'),
         [int]$Threshold = 70,
         [scriptblock]$AskClient,
         [int]$DelayMs = 500
@@ -32,42 +32,104 @@ function Invoke-Scoring {
 
         Write-Host "`rScoring answer $($i + 1)/$total..." -NoNewline
 
-        $scoringPrompt = @"
-Compare the following two answers for semantic similarity. Consider whether they convey the same meaning and information, even if worded differently. Rate the similarity on a scale from 0 to 100, where 0 means completely different and 100 means identical in meaning. Respond with ONLY a single number between 0 and 100, nothing else.
-
-Expected Answer: $($row.ExpectedAnswer)
-
-Actual Answer: $($row.ActualAnswer)
-"@
-
         try {
-            $judgeResult = Invoke-JudgeScoring -Prompt $scoringPrompt -Provider $JudgeProvider -TenantId $TenantId -AskClient $AskClient -RequestId ([ref]$requestId)
-            $row.SimilarityScore = $judgeResult.Score
-            $row.Metrics = @(
-                [PSCustomObject]@{
-                    name          = 'SemanticSimilarity'
+            $effectiveEvaluators = Resolve-Evaluators -Row $row -RunEvaluators $Evaluators
+            $metrics = @()
+            foreach ($evaluator in @($effectiveEvaluators | Where-Object { Test-IsLlmEvaluator $_ })) {
+                $scoringPrompt = New-ScoringPrompt -Row $row -Evaluator $evaluator
+                $judgeResult = Invoke-JudgeScoring -Prompt $scoringPrompt -Provider $JudgeProvider -TenantId $TenantId -AskClient $AskClient -RequestId ([ref]$requestId)
+                $metrics += [PSCustomObject]@{
+                    name          = $evaluator
                     score         = $judgeResult.Score
                     passed        = ($judgeResult.Score -ge $Threshold)
                     reason        = $judgeResult.Reason
                     provider      = $JudgeProvider
                     model         = $judgeResult.Model
                     scale         = '0-100'
-                    rubricVersion = 'evalscore-semantic-v1'
+                    rubricVersion = 'evalscore-m365-rubrics-v1'
                     threshold     = $Threshold
                 }
-            ) + @(Get-DeterministicMetrics -Row $row -Evaluators $Evaluators -Threshold $Threshold)
+            }
+            $primaryMetric = @($metrics | Where-Object { $_.name -eq 'Similarity' } | Select-Object -First 1)
+            if (-not $primaryMetric) { $primaryMetric = @($metrics | Select-Object -First 1) }
+            $row.SimilarityScore = if ($primaryMetric) { $primaryMetric.score } else { 0 }
+            $row.Metrics = $metrics + @(Get-DeterministicMetrics -Row $row -Evaluators $effectiveEvaluators -Threshold $Threshold)
+            $row.Status = Get-RowStatus -Row $row -Threshold $Threshold
         } catch {
             Write-Warning "Scoring failed for row $($i + 1): $($_.Exception.Message), setting to 0"
             $row.SimilarityScore = 0
+            $row.Status = 'error'
+            $row.Error = [PSCustomObject]@{ code = 'evaluatorsFailed'; message = $_.Exception.Message }
         }
 
         if ($i -lt $total - 1) {
             Start-Sleep -Milliseconds $DelayMs
         }
+
     }
 
     Write-Host ''
     return $Rows
+}
+
+function New-ScoringPrompt {
+    param([Parameter(Mandatory)][EvalRow]$Row, [string]$Evaluator = 'Similarity')
+    $rubric = switch ($Evaluator) {
+        'Relevance' { 'Measure whether the response directly addresses the user query and includes the important points needed to answer it. Penalize off-topic, incomplete, or insufficient answers.' }
+        'Coherence' { 'Measure whether the response is logically organized, internally consistent, fluent, and easy to follow. Penalize contradictions, confusing structure, or unreadable wording.' }
+        'Groundedness' { 'Measure whether claims in the response are supported by the provided context/source or expected answer. Penalize unsupported claims, hallucinations, or missing source support.' }
+        default { 'Measure semantic alignment between the actual response and the ground-truth response for the prompt. Wording can differ, but meaning and important facts should match.' }
+    }
+@"
+Evaluate the response using the $Evaluator rubric.
+$rubric
+Use a 0 to 100 scale where 0 is unusable and 100 is excellent for this rubric.
+Respond with ONLY a single number between 0 and 100, nothing else.
+
+Prompt: $($Row.Prompt)
+
+Expected or Ground-Truth Response: $($Row.ExpectedAnswer)
+
+Context / Source: $(if ($Row.Context) { $Row.Context } else { $Row.SourceLocation })
+
+Actual Answer: $($Row.ActualAnswer)
+"@
+}
+
+function Resolve-Evaluators {
+    param([EvalRow]$Row, [string[]]$RunEvaluators)
+    if ($RunEvaluators -contains 'all') {
+        $RunEvaluators = @('Similarity', 'Relevance', 'Coherence', 'Groundedness', 'Citations', 'ExactMatch', 'PartialMatch')
+    }
+    $base = if ($Row.DocumentDefaultEvaluators -and $Row.DocumentDefaultEvaluators.Count -gt 0) { @($Row.DocumentDefaultEvaluators.Keys) } else { $RunEvaluators }
+    $overrides = if ($Row.EvaluatorsMap -and $Row.EvaluatorsMap.Count -gt 0) { @($Row.EvaluatorsMap.Keys) } else { @() }
+    $names = if ($overrides.Count -gt 0 -and $Row.EvaluatorsMode -eq 'replace') { $overrides } else { $base + $overrides }
+    $result = @()
+    foreach ($name in $names) {
+        $normalized = if ($name -eq 'SemanticSimilarity') { 'Similarity' } else { $name }
+        if ($result -notcontains $normalized) { $result += $normalized }
+    }
+    if ($result.Count -eq 0) { return @('Relevance', 'Coherence') }
+    return $result
+}
+
+function Test-IsLlmEvaluator {
+    param([string]$Name)
+    return $Name -in @('Similarity', 'SemanticSimilarity', 'Relevance', 'Coherence', 'Groundedness')
+}
+
+function Get-RowStatus {
+    param([EvalRow]$Row, [int]$Threshold)
+    if (-not $Row.ActualAnswer -or $Row.ActualAnswer.StartsWith('[ERROR:')) { return 'error' }
+    $defined = @($Row.Metrics | Where-Object { $null -ne $_.passed })
+    if ($defined.Count -gt 0) {
+        $passed = @($defined | Where-Object { $_.passed }).Count
+        if ($passed -eq $defined.Count) { return 'pass' }
+        if ($passed -eq 0) { return 'fail' }
+        return 'partial'
+    }
+    if ($null -ne $Row.SimilarityScore -and $Row.SimilarityScore -ge $Threshold) { return 'pass' }
+    return 'fail'
 }
 
 function Invoke-JudgeScoring {

@@ -14,6 +14,7 @@ export type JudgeProvider = 'workiq' | 'github-copilot' | 'azure-openai';
 
 export type EvaluatorName =
   | 'SemanticSimilarity'
+  | 'Similarity'
   | 'Relevance'
   | 'Coherence'
   | 'Groundedness'
@@ -21,6 +22,23 @@ export type EvaluatorName =
   | 'ExactMatch'
   | 'PartialMatch'
   | 'EvalGenAssertions';
+
+export type EvaluatorsMode = 'extend' | 'replace';
+export type EvalStatus = 'pass' | 'fail' | 'partial' | 'error';
+
+export interface EvaluatorOptions {
+  threshold?: number;
+  citation_format?: string;
+  case_sensitive?: boolean;
+  options?: Record<string, unknown>;
+}
+
+export type EvaluatorMap = Partial<Record<Exclude<EvaluatorName, 'SemanticSimilarity' | 'EvalGenAssertions'>, EvaluatorOptions>>;
+
+export interface EvalError {
+  code: 'agentRequestFailed' | 'turnSkipped' | 'evaluatorsFailed';
+  message: string;
+}
 
 export interface EvaluationTarget {
   type: TargetType;
@@ -101,7 +119,82 @@ export interface EvalRow {
 
   /** Results of assertion checks (populated after scoring) */
   assertionResults?: AssertionResult[];
+
+  /** Stable m365 eval document item id, if present. */
+  id?: string;
+
+  /** Original item index for preserving document order in schema output. */
+  itemIndex?: number;
+
+  /** Zero-based turn index for rows that belong to a multi-turn thread. */
+  turnIndex?: number;
+
+  /** Multi-turn thread identifier/name used to preserve conversation boundaries. */
+  threadId?: string;
+
+  /** Optional thread display fields from m365 eval documents. */
+  threadName?: string;
+  threadDescription?: string;
+
+  /** Additional context used by groundedness-style evaluators. */
+  context?: string;
+
+  /** File-level default evaluators copied onto rows during read. */
+  documentDefaultEvaluators?: EvaluatorMap;
+
+  /** Per-item/per-turn evaluator overrides from m365 eval documents. */
+  evaluators?: EvaluatorMap;
+
+  /** How row-level evaluators combine with defaults. */
+  evaluatorsMode?: EvaluatorsMode;
+
+  /** Schema-native item/turn status derived after response generation and scoring. */
+  status?: EvalStatus;
+
+  /** Structured item/turn error when response generation or scoring fails. */
+  error?: EvalError;
 }
+
+export interface EvalDocument {
+  schemaVersion: string;
+  metadata?: Record<string, unknown>;
+  default_evaluators?: EvaluatorMap;
+  items: EvalDocumentItem[];
+}
+
+export type EvalDocumentItem = EvalDocumentSingleTurn | EvalDocumentThread;
+
+export interface EvalDocumentSingleTurn {
+  prompt: string;
+  expected_response?: string;
+  response?: string;
+  context?: string;
+  evaluators?: EvaluatorMap;
+  evaluators_mode?: EvaluatorsMode;
+  citations?: Citation[];
+  scores?: Record<string, unknown>;
+  status?: EvalStatus;
+  error?: EvalError;
+  extensions?: Record<string, unknown>;
+}
+
+export interface EvalDocumentThread {
+  name?: string;
+  description?: string;
+  turns: EvalDocumentTurn[];
+  conversation_id?: string;
+  summary?: {
+    turns_total: number;
+    turns_passed: number;
+    turns_failed: number;
+    turns_partial: number;
+    turns_errored: number;
+    overall_status: EvalStatus;
+  };
+  extensions?: Record<string, unknown>;
+}
+
+export interface EvalDocumentTurn extends EvalDocumentSingleTurn {}
 
 /**
  * Complete evaluation result containing all rows and metadata
@@ -130,6 +223,12 @@ export interface EvalResult {
 
   /** Evaluators requested for the run. */
   evaluators?: EvaluatorName[];
+
+  /** Source document metadata preserved from m365 eval documents. */
+  metadata?: Record<string, unknown>;
+
+  /** File-level default evaluators preserved from m365 eval documents. */
+  defaultEvaluators?: EvaluatorMap;
 }
 
 /**

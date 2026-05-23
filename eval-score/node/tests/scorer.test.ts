@@ -78,7 +78,7 @@ describe('scoreAnswers', () => {
 
     expect(rows[0].similarityScore).toBe(100);
     expect(rows[0].metrics?.map(metric => metric.name)).toEqual([
-      'SemanticSimilarity',
+      'Similarity',
       'ExactMatch',
       'PartialMatch',
       'Citations',
@@ -90,7 +90,7 @@ describe('scoreAnswers', () => {
 
 describe('parseEvaluators', () => {
   it('parses comma-separated evaluator names', () => {
-    expect(parseEvaluators('SemanticSimilarity,ExactMatch')).toEqual(['SemanticSimilarity', 'ExactMatch']);
+    expect(parseEvaluators('SemanticSimilarity,ExactMatch')).toEqual(['Similarity', 'ExactMatch']);
   });
 
   it('expands all evaluator preset', () => {

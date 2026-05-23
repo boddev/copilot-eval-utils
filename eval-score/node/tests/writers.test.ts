@@ -56,29 +56,30 @@ describe('writeCsv', () => {
 });
 
 describe('writeJson', () => {
-  it('writes JSON with snake_case keys', async () => {
+  it('writes schema-native eval document JSON', async () => {
     const outputPath = path.join(tmpDir, 'output.json');
     const rows = makeSampleRows();
 
     await writeJson(rows, outputPath);
 
     const content = JSON.parse(fs.readFileSync(outputPath, 'utf-8'));
-    expect(content).toHaveLength(2);
-    expect(content[0]).toHaveProperty('prompt', 'What is 2+2?');
-    expect(content[0]).toHaveProperty('expected_answer', '4');
-    expect(content[0]).toHaveProperty('source_location', 'math.docx');
-    expect(content[0]).toHaveProperty('actual_answer', 'Four');
-    expect(content[0]).toHaveProperty('similarity_score', 85);
-    expect(content[1]).toHaveProperty('similarity_score', 100);
+    expect(content).toHaveProperty('schemaVersion', '1.4.0');
+    expect(content.items).toHaveLength(2);
+    expect(content.items[0]).toHaveProperty('prompt', 'What is 2+2?');
+    expect(content.items[0]).toHaveProperty('expected_response', '4');
+    expect(content.items[0]).toHaveProperty('response', 'Four');
+    expect(content.items[0].extensions.evalscore).toHaveProperty('source_location', 'math.docx');
+    expect(content.items[0].extensions.evalscore).toHaveProperty('canonical_score_0_100', 85);
+    expect(content.items[1].extensions.evalscore).toHaveProperty('canonical_score_0_100', 100);
   });
 });
 
 describe('writeEvalFile', () => {
-  it('generates output filename as {basename}-results.{ext}', async () => {
+  it('generates canonical JSON output filename as {basename}-results.json', async () => {
     const rows = makeSampleRows();
     const outputPath = await writeEvalFile(rows, 'evaluation-data.csv', tmpDir, 'csv');
 
-    expect(path.basename(outputPath)).toBe('evaluation-data-results.csv');
+    expect(path.basename(outputPath)).toBe('evaluation-data-results.json');
     expect(fs.existsSync(outputPath)).toBe(true);
   });
 

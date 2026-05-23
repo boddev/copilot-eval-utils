@@ -130,6 +130,58 @@ function Write-EvalReport {
     return $outputPath
 }
 
+function New-EvalHtmlReport {
+    param(
+        [Parameter(Mandatory)][EvalResult]$EvalResult,
+        [Parameter(Mandatory)][ScoringResult]$ScoringResult
+    )
+
+    $rows = foreach ($row in $EvalResult.Rows) {
+        $status = if ($row.Status) { $row.Status } elseif ($null -ne $row.SimilarityScore -and $row.SimilarityScore -ge $ScoringResult.PassThreshold) { 'pass' } else { 'fail' }
+        "<tr><td>$(ConvertTo-HtmlText $status)</td><td>$($row.SimilarityScore)</td><td>$(ConvertTo-HtmlText (Truncate-Text -Text $row.Prompt -MaxLength 120))</td><td>$(ConvertTo-HtmlText (Truncate-Text -Text $row.ActualAnswer -MaxLength 200))</td></tr>"
+    }
+
+@"
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EvalScore Report</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;margin:2rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.5rem;vertical-align:top}</style>
+</head>
+<body>
+<h1>Evaluation Report</h1>
+<p><strong>Input:</strong> $(ConvertTo-HtmlText $EvalResult.InputFile)</p>
+<p><strong>Average score:</strong> $($ScoringResult.AverageScore.ToString('F1')) / 100</p>
+<p><strong>Pass rate:</strong> $($ScoringResult.PassCount)/$($ScoringResult.TotalQuestions)</p>
+<p><strong>Judge:</strong> $(ConvertTo-HtmlText $EvalResult.JudgeProvider)</p>
+<table><thead><tr><th>Status</th><th>Score</th><th>Prompt</th><th>Actual response</th></tr></thead><tbody>
+$($rows -join "`n")
+</tbody></table>
+</body>
+</html>
+"@
+}
+
+function Write-EvalHtmlReport {
+    param(
+        [Parameter(Mandatory)][string]$Report,
+        [Parameter(Mandatory)][string]$OutputDir,
+        [Parameter(Mandatory)][string]$InputFile
+    )
+
+    if (-not (Test-Path -Path $OutputDir)) {
+        New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+    }
+
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
+    $outputPath = Join-Path -Path $OutputDir -ChildPath "$baseName-report.html"
+
+    Set-Content -Path $outputPath -Value $Report -Encoding UTF8
+
+    return $outputPath
+}
+
 # --- Private helper functions ---
 
 function Build-ScoreBuckets {
@@ -188,4 +240,10 @@ function Format-Percentage {
 
     if ($Total -eq 0) { return '0' }
     return [Math]::Round(($Count / $Total) * 100, 0).ToString('0')
+}
+
+function ConvertTo-HtmlText {
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    return [System.Net.WebUtility]::HtmlEncode($Text)
 }

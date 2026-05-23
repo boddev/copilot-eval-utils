@@ -233,70 +233,6 @@ function Send-WorkIQRequest {
         Start-WorkIQSession -TenantId $TenantId
     }
 
-    function Send-WorkIQA2ARequest {
-        <#
-        .SYNOPSIS
-            Sends a question to a specific M365 Copilot agent through the WorkIQ A2A endpoint.
-        #>
-        param(
-            [Parameter(Mandatory)][string]$Question,
-            [Parameter(Mandatory)][string]$AgentId,
-            [string]$ConversationId,
-            [int]$TimeoutMs = 120000
-        )
-
-        $endpoint = $env:WORK_IQ_A2A_ENDPOINT
-        $token = $env:WORK_IQ_A2A_ACCESS_TOKEN
-        if (-not $endpoint) { throw 'M365 agent ID targeting requires WORK_IQ_A2A_ENDPOINT.' }
-        if (-not $token) { throw 'M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN.' }
-
-        $base = $endpoint.TrimEnd('/')
-        $agentUrl = "$base/$([uri]::EscapeDataString($AgentId))"
-        $cardUrl = "$agentUrl/.well-known/agent-card.json"
-        $headers = @{ Authorization = "Bearer $token" }
-
-        try {
-            $card = Invoke-RestMethod -Uri $cardUrl -Headers $headers -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
-            if ($card.url) { $agentUrl = $card.url }
-        } catch {
-            # Match the m365-copilot-eval A2A fallback: use /{agentId} when agent-card discovery fails.
-        }
-
-        $messageId = "evalscore-$([guid]::NewGuid().ToString('N'))"
-        $params = @{
-            message = @{
-                role      = 'user'
-                parts     = @(@{ kind = 'text'; text = $Question })
-                messageId = $messageId
-            }
-            metadata = @{
-                source   = 'eval-score'
-                location = 'EvalScore'
-            }
-        }
-        if ($ConversationId) { $params.contextId = $ConversationId }
-
-        $payload = @{
-            jsonrpc = '2.0'
-            id      = $messageId
-            method  = 'message/send'
-            params  = $params
-        } | ConvertTo-Json -Depth 20
-
-        $jsonHeaders = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' }
-        $response = Invoke-RestMethod -Uri $agentUrl -Method Post -Headers $jsonHeaders -Body $payload -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
-        $parts = @($response.result.message.parts) + @($response.result.parts) | Where-Object { $_ -and $_.text }
-        $text = ($parts | ForEach-Object { $_.text }) -join "`n"
-        if (-not $text) { throw 'WorkIQ A2A returned an empty response.' }
-
-        return [PSCustomObject]@{
-            Text           = $text
-            ConversationId = $response.result.contextId
-            Raw            = $response
-            Citations      = $response.result.citations
-        }
-    }
-
     # Auto-increment MCP request ID (EULA used id=1 during init)
     $script:McpRequestId++
     $mcpId = $script:McpRequestId
@@ -370,6 +306,103 @@ function Stop-WorkIQSession {
     $script:McpLineQueue = $null
     $script:McpReaderRunspace = $null
     $script:McpReaderPipeline = $null
+}
+
+function Get-WorkIQA2AToken {
+    param([switch]$ForceRefresh)
+    if ($env:WORK_IQ_A2A_TOKEN_COMMAND -or $env:EVALSCORE_A2A_TOKEN_COMMAND) {
+        $command = if ($env:WORK_IQ_A2A_TOKEN_COMMAND) { $env:WORK_IQ_A2A_TOKEN_COMMAND } else { $env:EVALSCORE_A2A_TOKEN_COMMAND }
+        $token = (& $env:ComSpec /c $command).Trim()
+        if (-not $token) { throw 'A2A token command returned an empty access token.' }
+        $script:CachedA2AToken = $token
+        return $token
+    }
+    if ($script:CachedA2AToken -and -not $ForceRefresh) { return $script:CachedA2AToken }
+    if ($env:WORK_IQ_A2A_ACCESS_TOKEN) {
+        $script:CachedA2AToken = $env:WORK_IQ_A2A_ACCESS_TOKEN
+        return $script:CachedA2AToken
+    }
+    throw 'M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN or WORK_IQ_A2A_TOKEN_COMMAND.'
+}
+
+function Send-WorkIQA2ARequest {
+    <#
+    .SYNOPSIS
+        Sends a question to a specific M365 Copilot agent through the WorkIQ A2A endpoint.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Question,
+        [Parameter(Mandatory)][string]$AgentId,
+        [string]$ConversationId,
+        [int]$TimeoutMs = 120000
+    )
+
+    $endpoint = $env:WORK_IQ_A2A_ENDPOINT
+    if (-not $endpoint) { throw 'M365 agent ID targeting requires WORK_IQ_A2A_ENDPOINT.' }
+
+    $base = $endpoint.TrimEnd('/')
+    $token = Get-WorkIQA2AToken
+    $headers = @{ Authorization = "Bearer $token"; 'X-variants' = 'feature.EnableA2AServer' }
+    $agentUrl = "$base/$([uri]::EscapeDataString($AgentId))"
+
+    try {
+        $agents = Invoke-RestMethod -Uri "$base/.agents" -Headers $headers -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
+        $agentList = if ($agents.agents) { @($agents.agents) } else { @($agents) }
+        $match = @($agentList | Where-Object { $_.id -eq $AgentId -or $_.agentId -eq $AgentId -or $_.name -eq $AgentId } | Select-Object -First 1)
+        if ($match -and ($match.url -or $match.endpoint -or $match.agentUrl)) {
+            $agentUrl = if ($match.url) { $match.url } elseif ($match.endpoint) { $match.endpoint } else { $match.agentUrl }
+        }
+    } catch { }
+
+    if ($agentUrl -eq "$base/$([uri]::EscapeDataString($AgentId))") {
+        $cardUrl = "$agentUrl/.well-known/agent-card.json"
+        try {
+            $card = Invoke-RestMethod -Uri $cardUrl -Headers $headers -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
+            if ($card.url) { $agentUrl = $card.url }
+        } catch { }
+    }
+
+    $messageId = "evalscore-$([guid]::NewGuid().ToString('N'))"
+    $params = @{
+        message = @{
+            kind      = 'message'
+            role      = 'user'
+            parts     = @(@{ kind = 'text'; text = $Question })
+            messageId = $messageId
+        }
+    }
+    if ($ConversationId) { $params.contextId = $ConversationId }
+
+    $payload = @{
+        jsonrpc = '2.0'
+        id      = $messageId
+        method  = 'message/send'
+        params  = $params
+    } | ConvertTo-Json -Depth 20
+
+    $jsonHeaders = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json'; 'X-variants' = 'feature.EnableA2AServer' }
+    try {
+        $response = Invoke-RestMethod -Uri $agentUrl -Method Post -Headers $jsonHeaders -Body $payload -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
+    } catch {
+        if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 401 -and ($env:WORK_IQ_A2A_TOKEN_COMMAND -or $env:EVALSCORE_A2A_TOKEN_COMMAND)) {
+            $token = Get-WorkIQA2AToken -ForceRefresh
+            $jsonHeaders.Authorization = "Bearer $token"
+            $response = Invoke-RestMethod -Uri $agentUrl -Method Post -Headers $jsonHeaders -Body $payload -TimeoutSec ([math]::Ceiling($TimeoutMs / 1000))
+        } else {
+            throw
+        }
+    }
+
+    $parts = @($response.result.status.message.parts) + @($response.result.message.parts) + @($response.result.parts) + @($response.result.artifacts.parts) | Where-Object { $_ -and $_.text }
+    $text = ($parts | ForEach-Object { $_.text }) -join "`n"
+    if (-not $text) { throw 'WorkIQ A2A returned an empty response.' }
+
+    return [PSCustomObject]@{
+        Text           = $text
+        ConversationId = $response.result.contextId
+        Raw            = $response
+        Citations      = $response.result.citations
+    }
 }
 
 function New-MockWorkIQClient {

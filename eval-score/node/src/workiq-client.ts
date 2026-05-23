@@ -365,6 +365,7 @@ export class CliWorkIQClient implements WorkIQClient {
 export class A2AWorkIQClient implements WorkIQClient {
   private endpoint: string;
   private accessToken: string;
+  private tokenCommand: string;
   private timeoutMs: number;
   private maxAttempts: number;
   private backoffBaseMs: number;
@@ -376,9 +377,11 @@ export class A2AWorkIQClient implements WorkIQClient {
     timeoutMs?: number;
     maxAttempts?: number;
     backoffBaseMs?: number;
+    tokenCommand?: string;
   }) {
     this.endpoint = (options?.endpoint ?? process.env.WORK_IQ_A2A_ENDPOINT ?? '').replace(/\/+$/, '');
     this.accessToken = options?.accessToken ?? process.env.WORK_IQ_A2A_ACCESS_TOKEN ?? '';
+    this.tokenCommand = options?.tokenCommand ?? process.env.WORK_IQ_A2A_TOKEN_COMMAND ?? process.env.EVALSCORE_A2A_TOKEN_COMMAND ?? '';
     this.timeoutMs = options?.timeoutMs ?? parseTimeoutMsEnv();
     this.maxAttempts = Math.max(1, options?.maxAttempts ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_MAX_ATTEMPTS', 3));
     this.backoffBaseMs = Math.max(0, options?.backoffBaseMs ?? parsePositiveIntEnv('EVALSCORE_WORKIQ_BACKOFF_MS', 2000));
@@ -411,8 +414,8 @@ export class A2AWorkIQClient implements WorkIQClient {
     if (!this.endpoint) {
       throw new Error('M365 agent ID targeting requires WORK_IQ_A2A_ENDPOINT.');
     }
-    if (!this.accessToken) {
-      throw new Error('M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN.');
+    if (!this.accessToken && !this.tokenCommand) {
+      throw new Error('M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN or WORK_IQ_A2A_TOKEN_COMMAND.');
     }
   }
 
@@ -421,10 +424,20 @@ export class A2AWorkIQClient implements WorkIQClient {
     if (cached) return cached;
 
     const fallbackUrl = `${this.endpoint}/${encodeURIComponent(agentId)}`;
+    const discoveredUrl = await this.discoverAgentUrl(agentId);
+    if (discoveredUrl) {
+      this.resolvedAgentUrls.set(agentId, discoveredUrl);
+      return discoveredUrl;
+    }
+
     const cardUrl = `${fallbackUrl}/.well-known/agent-card.json`;
     try {
+      const token = await this.getAccessToken();
       const response = await fetch(cardUrl, {
-        headers: { Authorization: `Bearer ${this.accessToken}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-variants': 'feature.EnableA2AServer',
+        },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       if (response.ok) {
@@ -441,6 +454,33 @@ export class A2AWorkIQClient implements WorkIQClient {
     return fallbackUrl;
   }
 
+  private async discoverAgentUrl(agentId: string): Promise<string | undefined> {
+    try {
+      const token = await this.getAccessToken();
+      const response = await fetch(`${this.endpoint}/.agents`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-variants': 'feature.EnableA2AServer',
+        },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      if (!response.ok) return undefined;
+      const raw = await response.json() as unknown;
+      const agents = Array.isArray(raw)
+        ? raw
+        : Array.isArray((raw as { agents?: unknown }).agents)
+          ? (raw as { agents: unknown[] }).agents
+          : [];
+      const match = agents
+        .map(agent => agent as Record<string, unknown>)
+        .find(agent => [agent.id, agent.agentId, agent.name].some(value => value === agentId));
+      const url = match?.url ?? match?.endpoint ?? match?.agentUrl;
+      return typeof url === 'string' && url.length > 0 ? url : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async sendA2AMessage(question: string, options: WorkIQAskOptions): Promise<WorkIQResponse> {
     const agentUrl = await this.resolveAgentUrl(options.agentId!);
     const messageId = `evalscore-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -450,13 +490,17 @@ export class A2AWorkIQClient implements WorkIQClient {
       method: 'message/send',
       params: {
         message: {
+          kind: 'message',
           role: 'user',
           parts: [{ kind: 'text', text: question }],
           messageId,
-        },
-        metadata: {
-          source: 'eval-score',
-          location: 'EvalScore',
+          metadata: {
+            location: {
+              countryOrRegion: 'US',
+              countryOrRegionConfidence: 1.0,
+              timeZone: 'America/Chicago',
+            },
+          },
         },
       },
     };
@@ -465,15 +509,31 @@ export class A2AWorkIQClient implements WorkIQClient {
       (payload.params as { contextId?: string }).contextId = options.conversationId;
     }
 
-    const response = await fetch(agentUrl, {
+    const token = await this.getAccessToken();
+    let response = await fetch(agentUrl, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
+        'X-variants': 'feature.EnableA2AServer',
       },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
+
+    if (response.status === 401 && this.tokenCommand) {
+      const refreshedToken = await this.getAccessToken(true);
+      response = await fetch(agentUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${refreshedToken}`,
+          'Content-Type': 'application/json',
+          'X-variants': 'feature.EnableA2AServer',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    }
 
     if (!response.ok) {
       const retryAfter = response.headers.get('retry-after');
@@ -496,6 +556,17 @@ export class A2AWorkIQClient implements WorkIQClient {
       raw,
     };
   }
+
+  private async getAccessToken(forceRefresh = false): Promise<string> {
+    if (this.accessToken && !forceRefresh) return this.accessToken;
+    if (!this.tokenCommand) return this.accessToken;
+    const token = (await runShellCommand(this.tokenCommand)).trim();
+    if (!token) {
+      throw new Error('A2A token command returned an empty access token.');
+    }
+    this.accessToken = token;
+    return token;
+  }
 }
 
 function spawnWorkIQ(args: string[]): ChildProcess {
@@ -513,6 +584,25 @@ function buildShellCommand(command: string, args: string[]): string {
 function quoteShellArg(value: string): string {
   if (!/[\s"&|<>^]/.test(value)) return value;
   return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function runShellCommand(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, { shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', data => stdout.push(Buffer.from(data)));
+    child.stderr.on('data', data => stderr.push(Buffer.from(data)));
+    child.on('error', reject);
+    child.on('close', code => {
+      const output = Buffer.concat(stdout).toString('utf-8');
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(`Command exited with code ${code}: ${Buffer.concat(stderr).toString('utf-8')}`));
+    });
+  });
 }
 
 /**
@@ -544,6 +634,27 @@ function normalizeAskOptions(tenantIdOrOptions?: string | WorkIQAskOptions): Wor
 
 function extractA2AText(raw: unknown): string {
   const result = (raw as { result?: unknown })?.result;
+  const taskResult = result as {
+    kind?: string;
+    parts?: Array<{ kind?: string; text?: string }>;
+    status?: { state?: string; message?: { parts?: Array<{ kind?: string; text?: string }> } };
+    artifacts?: Array<{ parts?: Array<{ kind?: string; text?: string }> }>;
+  };
+
+  if (taskResult?.kind === 'task') {
+    const parts = [
+      ...(taskResult.status?.message?.parts ?? []),
+      ...(taskResult.artifacts ?? []).flatMap(artifact => artifact.parts ?? []),
+    ];
+    const text = parts
+      .filter(part => !part.kind || part.kind === 'text')
+      .map(part => part.text)
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+    if (text) return text;
+  }
+
   const candidates = [
     (result as { message?: { parts?: Array<{ text?: string }> } })?.message?.parts,
     (result as { parts?: Array<{ text?: string }> })?.parts,

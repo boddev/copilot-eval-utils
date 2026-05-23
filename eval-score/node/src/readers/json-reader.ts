@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { Assertion, EvalRow, MetricResult } from '../types';
+import { Assertion, EvalRow, EvaluatorMap, MetricResult } from '../types';
 import { normalizeHeaders, mapRow } from './normalize';
 
 /**
@@ -19,36 +19,51 @@ export async function readJson(filePath: string): Promise<EvalRow[]> {
   }
 
   if (isM365EvalDocument(parsed)) {
+    const defaultEvaluators = coerceEvaluatorMap(parsed.default_evaluators);
+    const metadata = isRecord(parsed.metadata) ? parsed.metadata : undefined;
     return parsed.items.flatMap((item, itemIndex) => {
       if (Array.isArray(item.turns) && item.turns.length > 0) {
         return item.turns.map((turn, turnIndex) => ({
           prompt: turn.prompt ?? turn.question ?? '',
-          expectedAnswer: turn.expected_answer ?? turn.expectedAnswer ?? item.expected_answer ?? item.expectedAnswer ?? '',
+          expectedAnswer: turn.expected_response ?? turn.expected_answer ?? turn.expectedAnswer ?? item.expected_response ?? item.expected_answer ?? item.expectedAnswer ?? '',
           sourceLocation: turn.source_location ?? turn.sourceLocation ?? item.source_location ?? item.sourceLocation ?? '',
-          actualAnswer: turn.actual_answer ?? turn.actualAnswer ?? '',
+          actualAnswer: turn.response ?? turn.actual_answer ?? turn.actualAnswer ?? '',
+          context: turn.context ?? item.context,
           assertions: turn.assertions ?? item.assertions,
           metrics: turn.metrics,
           similarityScore: coerceScore(turn.similarity_score ?? turn.similarityScore),
-          conversationId: turn.conversation_id ?? turn.conversationId,
-          responseMetadata: turn.response_metadata ?? turn.responseMetadata,
+          conversationId: item.conversation_id ?? item.conversationId ?? turn.conversation_id ?? turn.conversationId,
           citations: turn.citations,
-          _id: item.id ?? `item-${itemIndex + 1}`,
-          _turnIndex: turnIndex,
+          id: item.id ?? item.name ?? `item-${itemIndex + 1}`,
+          itemIndex,
+          turnIndex,
+          threadId: item.id ?? item.name ?? `item-${itemIndex + 1}`,
+          threadName: item.name,
+          threadDescription: item.description,
+          documentDefaultEvaluators: defaultEvaluators,
+          evaluators: coerceEvaluatorMap(turn.evaluators ?? item.evaluators),
+          evaluatorsMode: turn.evaluators_mode ?? item.evaluators_mode,
+          responseMetadata: metadata ? { documentMetadata: metadata, raw: turn.response_metadata ?? turn.responseMetadata } : turn.response_metadata ?? turn.responseMetadata,
         }));
       }
 
       return [{
         prompt: item.prompt ?? item.question ?? '',
-        expectedAnswer: item.expected_answer ?? item.expectedAnswer ?? '',
+        expectedAnswer: item.expected_response ?? item.expected_answer ?? item.expectedAnswer ?? '',
         sourceLocation: item.source_location ?? item.sourceLocation ?? '',
-        actualAnswer: item.actual_answer ?? item.actualAnswer ?? '',
+        actualAnswer: item.response ?? item.actual_answer ?? item.actualAnswer ?? '',
+        context: item.context,
         assertions: item.assertions,
         metrics: item.metrics,
         similarityScore: coerceScore(item.similarity_score ?? item.similarityScore),
         conversationId: item.conversation_id ?? item.conversationId,
-        responseMetadata: item.response_metadata ?? item.responseMetadata,
+        responseMetadata: metadata ? { documentMetadata: metadata, raw: item.response_metadata ?? item.responseMetadata } : item.response_metadata ?? item.responseMetadata,
         citations: item.citations,
-        _id: item.id ?? `item-${itemIndex + 1}`,
+        id: item.id ?? `item-${itemIndex + 1}`,
+        itemIndex,
+        documentDefaultEvaluators: defaultEvaluators,
+        evaluators: coerceEvaluatorMap(item.evaluators),
+        evaluatorsMode: item.evaluators_mode,
       }];
     });
   }
@@ -74,6 +89,10 @@ export async function readJson(filePath: string): Promise<EvalRow[]> {
     row.citations = record.citations as EvalRow['citations'];
     row.responseMetadata = record.response_metadata ?? record.responseMetadata;
     row.conversationId = asString(record.conversation_id ?? record.conversationId);
+    row.id = asString(record.id);
+    row.context = asString(record.context);
+    row.evaluators = coerceEvaluatorMap(record.evaluators);
+    row.evaluatorsMode = record.evaluators_mode === 'replace' ? 'replace' : record.evaluators_mode === 'extend' ? 'extend' : undefined;
     if (row.similarityScore === undefined) {
       row.similarityScore = coerceScore(record.similarity_score ?? record.similarityScore);
     }
@@ -83,10 +102,19 @@ export async function readJson(filePath: string): Promise<EvalRow[]> {
 
 type M365EvalItem = Record<string, any> & { turns?: Array<Record<string, any>> };
 
-function isM365EvalDocument(value: unknown): value is { items: M365EvalItem[] } {
+function isM365EvalDocument(value: unknown): value is { items: M365EvalItem[]; default_evaluators?: unknown; metadata?: unknown } {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return Array.isArray(record.items);
+}
+
+function coerceEvaluatorMap(value: unknown): EvaluatorMap | undefined {
+  if (!isRecord(value)) return undefined;
+  return value as EvaluatorMap;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function coerceScore(value: unknown): number | undefined {

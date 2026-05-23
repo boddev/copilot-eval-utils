@@ -53,12 +53,48 @@ function Write-JsonEval {
         [Parameter(Mandatory)][string]$OutputPath
     )
 
-    $objects = $Rows | ForEach-Object { ConvertFrom-EvalRowToPSObject -Row $_ -Target 'json' }
-    $json = $objects | ConvertTo-Json -Depth 10
-    # ConvertTo-Json returns a bare object instead of an array for single items
-    if ($Rows.Count -eq 1) {
-        $json = "[$json]"
+    $items = @()
+    $groupedThreads = @{}
+    $singleRows = @()
+    foreach ($row in $Rows) {
+        if ($null -ne $row.TurnIndex) {
+            $key = if ($row.ThreadId) { $row.ThreadId } elseif ($row.Id) { $row.Id } else { "item-$($row.ItemIndex)" }
+            if (-not $groupedThreads.ContainsKey($key)) { $groupedThreads[$key] = @() }
+            $groupedThreads[$key] += $row
+        } else {
+            $singleRows += $row
+        }
     }
+    foreach ($row in $singleRows) {
+        $items += ConvertTo-SchemaTurn -Row $row
+    }
+    foreach ($key in $groupedThreads.Keys) {
+        $turnRows = @($groupedThreads[$key] | Sort-Object TurnIndex)
+        $turns = @($turnRows | ForEach-Object { ConvertTo-SchemaTurn -Row $_ })
+        $statuses = @($turns | ForEach-Object { if ($_.status) { $_.status } else { 'fail' } })
+        $items += [PSCustomObject]@{
+            name            = $turnRows[0].ThreadName
+            description     = $turnRows[0].ThreadDescription
+            conversation_id = $turnRows[0].ConversationId
+            turns           = $turns
+            summary         = [PSCustomObject]@{
+                turns_total   = $turns.Count
+                turns_passed  = @($statuses | Where-Object { $_ -eq 'pass' }).Count
+                turns_failed  = @($statuses | Where-Object { $_ -eq 'fail' }).Count
+                turns_partial = @($statuses | Where-Object { $_ -eq 'partial' }).Count
+                turns_errored = @($statuses | Where-Object { $_ -eq 'error' }).Count
+                overall_status = Get-OverallStatus -Statuses $statuses
+            }
+            extensions      = @{ evalscore = @{ item_id = $turnRows[0].Id } }
+        }
+    }
+    $document = [PSCustomObject]@{
+        schemaVersion      = '1.4.0'
+        metadata           = @{ evaluatedAt = (Get-Date).ToUniversalTime().ToString('o'); cliVersion = 'eval-score'; extensions = @{ evalscore = @{ canonicalScoreScale = '0-100' } } }
+        default_evaluators = if ($Rows.Count -gt 0) { $Rows[0].DocumentDefaultEvaluators } else { @{} }
+        items              = $items
+    }
+    $json = $document | ConvertTo-Json -Depth 30
     Set-Content -Path $OutputPath -Value $json -Encoding UTF8
 }
 
@@ -74,23 +110,55 @@ function Write-EvalFile {
         New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
     }
 
-    $extensionMap = @{
-        csv  = '.csv'
-        tsv  = '.tsv'
-        xlsx = '.xlsx'
-        json = '.json'
-    }
-
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($InputFile)
-    $outputFileName = "$baseName-results$($extensionMap[$Format])"
+    $outputFileName = "$baseName-results.json"
     $outputPath = Join-Path -Path $OutputDir -ChildPath $outputFileName
 
-    switch ($Format) {
-        'csv'  { Write-CsvEval  -Rows $Rows -OutputPath $outputPath }
-        'tsv'  { Write-CsvEval  -Rows $Rows -OutputPath $outputPath -Delimiter "`t" }
-        'xlsx' { Write-XlsxEval -Rows $Rows -OutputPath $outputPath }
-        'json' { Write-JsonEval -Rows $Rows -OutputPath $outputPath }
-    }
+    Write-JsonEval -Rows $Rows -OutputPath $outputPath
 
     return $outputPath
+}
+
+function ConvertTo-SchemaTurn {
+    param([Parameter(Mandatory)][EvalRow]$Row)
+    $metrics = @{}
+    foreach ($metric in @($Row.Metrics)) {
+        if (-not $metric) { continue }
+        $key = switch ($metric.name) {
+            'SemanticSimilarity' { 'similarity' }
+            'Similarity' { 'similarity' }
+            'Relevance' { 'relevance' }
+            'Coherence' { 'coherence' }
+            'Groundedness' { 'groundedness' }
+            'ExactMatch' { 'exactMatch' }
+            'PartialMatch' { 'partialMatch' }
+            'Citations' { 'citations' }
+            default { $null }
+        }
+        if ($key) {
+            $metrics[$key] = @{ score_0_100 = $metric.score; result = if ($metric.passed) { 'pass' } else { 'fail' }; reason = $metric.reason; threshold = $metric.threshold }
+        }
+    }
+    $status = if ($Row.Status) { $Row.Status } elseif ($Row.ActualAnswer -and $Row.ActualAnswer.StartsWith('[ERROR:')) { 'error' } elseif ($null -ne $Row.SimilarityScore -and $Row.SimilarityScore -ge 70) { 'pass' } else { 'fail' }
+    return [PSCustomObject]@{
+        prompt            = $Row.Prompt
+        expected_response = $Row.ExpectedAnswer
+        response          = $Row.ActualAnswer
+        context           = if ($Row.Context) { $Row.Context } else { $Row.SourceLocation }
+        evaluators        = $Row.EvaluatorsMap
+        evaluators_mode   = $Row.EvaluatorsMode
+        citations         = $Row.Citations
+        scores            = $metrics
+        status            = $status
+        error             = $Row.Error
+        extensions        = @{ evalscore = @{ item_id = $Row.Id; item_index = $Row.ItemIndex; turn_index = $Row.TurnIndex; source_location = $Row.SourceLocation; canonical_score_0_100 = $Row.SimilarityScore; response_metadata = $Row.ResponseMetadata } }
+    }
+}
+
+function Get-OverallStatus {
+    param([string[]]$Statuses)
+    if ($Statuses -contains 'error') { return 'error' }
+    if (@($Statuses | Where-Object { $_ -ne 'pass' }).Count -eq 0) { return 'pass' }
+    if (@($Statuses | Where-Object { $_ -ne 'fail' }).Count -eq 0) { return 'fail' }
+    return 'partial'
 }

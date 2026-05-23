@@ -14,6 +14,7 @@ function Invoke-Evaluation {
 
     $total = $Rows.Count
     $requestCounter = 0
+    $threadContext = @{}
 
     for ($i = 0; $i -lt $total; $i++) {
         $row = $Rows[$i]
@@ -31,9 +32,12 @@ function Invoke-Evaluation {
             if ($AskClient) {
                 $response = $AskClient.Invoke($fullPrompt)
             } elseif ($M365AgentId) {
-                $a2aResponse = Send-WorkIQA2ARequest -Question $fullPrompt -AgentId $M365AgentId -ConversationId $row.ConversationId
+                $threadKey = if ($row.ThreadId) { $row.ThreadId } elseif ($row.Id) { $row.Id } else { '' }
+                $conversationId = if ($row.ConversationId) { $row.ConversationId } elseif ($threadKey -and $threadContext.ContainsKey($threadKey)) { $threadContext[$threadKey] } else { '' }
+                $a2aResponse = Send-WorkIQA2ARequest -Question $fullPrompt -AgentId $M365AgentId -ConversationId $conversationId
                 $response = $a2aResponse.Text
                 $row.ConversationId = "$($a2aResponse.ConversationId)"
+                if ($threadKey -and $row.ConversationId) { $threadContext[$threadKey] = $row.ConversationId }
                 $row.ResponseMetadata = $a2aResponse.Raw
                 $row.Citations = @($a2aResponse.Citations)
             } else {
@@ -48,6 +52,8 @@ function Invoke-Evaluation {
             $row.ActualAnswer = "$response".Trim()
         } catch {
             $row.ActualAnswer = "[ERROR: $($_.Exception.Message)]"
+            $row.Status = 'error'
+            $row.Error = [PSCustomObject]@{ code = 'agentRequestFailed'; message = $_.Exception.Message }
         }
 
         Write-Host "`rProcessing prompt $num/$total..." -NoNewline

@@ -48,7 +48,7 @@ param(
     [ValidateSet('workiq', 'github-copilot', 'azure-openai')]
     [string]$JudgeProvider = 'workiq',
 
-    [string]$Evaluators = 'SemanticSimilarity',
+    [string]$Evaluators = 'Relevance,Coherence',
 
     [int]$Concurrency = 1,
 
@@ -198,6 +198,9 @@ try {
     $report = New-EvalReport -EvalResult $evalResult -ScoringResult $scoringResult
     $reportPath = Write-EvalReport -Report $report -OutputDir $OutputDir -InputFile $InputFile
     Write-Host "  Report written to: $reportPath"
+    $htmlReport = New-EvalHtmlReport -EvalResult $evalResult -ScoringResult $scoringResult
+    $htmlReportPath = Write-EvalHtmlReport -Report $htmlReport -OutputDir $OutputDir -InputFile $InputFile
+    Write-Host "  HTML report written to: $htmlReportPath"
 
     # 14. Write eval file
     $evalFilePath = Write-EvalFile -Rows $rows -InputFile $InputFile -OutputDir $OutputDir -Format $format
@@ -215,6 +218,7 @@ try {
     Write-Host "  Max score:       $($scoringResult.MaxScore)"
     Write-Host ''
     Write-Host "  Report:          $reportPath"
+    Write-Host "  HTML report:     $htmlReportPath"
     Write-Host "  Eval file:       $evalFilePath"
     Write-Host '================================================'
 

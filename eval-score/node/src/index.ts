@@ -9,7 +9,7 @@ import { writeEvalFile } from './writers';
 import { A2AWorkIQClient, CliWorkIQClient, WorkIQClient, resolveSystemPrompt } from './workiq-client';
 import { evaluatePrompts } from './evaluator';
 import { scoreAnswers, calculateScoringResult, parseEvaluators } from './scorer';
-import { generateReport, writeReport } from './reporter';
+import { generateHtmlReport, generateReport, writeHtmlReport, writeReport } from './reporter';
 import { loadAssertionsFromSidecar, evaluateAllAssertions } from './assertion-checker';
 import { loadEvalSet } from './evalset-loader';
 import { runPreflight, printPreflightResults } from './setup';
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     .option('--connector-prompt-hint', 'Inject connector targeting text into WorkIQ prompts', false)
     .option('--no-connector-prompt-hint', 'Do not inject connector targeting text into WorkIQ prompts')
     .option('--judge-provider <provider>', 'Scoring provider: workiq, github-copilot, azure-openai', 'workiq')
-    .option('--evaluators <names>', 'Comma-separated evaluators or "all"', 'SemanticSimilarity')
+    .option('--evaluators <names>', 'Comma-separated evaluators or "all"', 'Relevance,Coherence')
     .option('--concurrency <number>', 'Maximum concurrent request workers', '1')
     .option('--delay-ms <number>', 'Delay between requests per worker', '500')
     .option('--checkpoint-file <path>', 'JSON checkpoint file for partial high-volume results')
@@ -263,12 +263,16 @@ async function main(): Promise<void> {
       target: buildTarget(options),
       judgeProvider,
       evaluators,
+      metadata: extractDocumentMetadata(scoredRows),
+      defaultEvaluators: scoredRows[0]?.documentDefaultEvaluators,
     };
 
     // Generate and write report
     console.error('\nGenerating report...');
     const report = generateReport(evalResult, scoringResult);
     const reportPath = await writeReport(report, path.resolve(options.outputDir), inputPath);
+    const htmlReport = generateHtmlReport(evalResult, scoringResult);
+    const htmlReportPath = await writeHtmlReport(htmlReport, path.resolve(options.outputDir), inputPath);
 
     // Write completed evaluation file
     const evalOutputPath = await writeEvalFile(
@@ -276,6 +280,14 @@ async function main(): Promise<void> {
       inputPath,
       path.resolve(options.outputDir),
       format,
+      {
+        metadata: evalResult.metadata,
+        defaultEvaluators: evalResult.defaultEvaluators,
+        target: evalResult.target,
+        judgeProvider: evalResult.judgeProvider,
+        evaluators: evalResult.evaluators,
+        threshold: options.threshold,
+      },
     );
 
     // Print summary to stdout
@@ -285,6 +297,7 @@ async function main(): Promise<void> {
 
     console.log('\n=== Evaluation Complete ===');
     console.log(`  Report:          ${reportPath}`);
+    console.log(`  HTML report:     ${htmlReportPath}`);
     console.log(`  Evaluation file: ${evalOutputPath}`);
     console.log(`  Average score:   ${scoringResult.averageScore.toFixed(1)}%`);
     console.log(`  Pass rate:       ${passRate}% (${scoringResult.passCount}/${scoringResult.totalQuestions})`);
@@ -345,13 +358,23 @@ async function writeCheckpoint(
   metadata: Pick<EvalResult, 'inputFile' | 'target' | 'judgeProvider' | 'evaluators'>,
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(checkpointFile), { recursive: true });
-  const payload = {
-    schemaVersion: 'evalscore-results-v2',
-    timestamp: new Date().toISOString(),
-    ...metadata,
-    rows,
-  };
+  const { rowsToEvalDocument } = await import('./eval-document');
+  const payload = rowsToEvalDocument(rows, {
+    metadata: { evaluatedAt: new Date().toISOString() },
+    defaultEvaluators: rows[0]?.documentDefaultEvaluators,
+    inputFile: metadata.inputFile,
+    target: metadata.target,
+    judgeProvider: metadata.judgeProvider,
+    runEvaluators: metadata.evaluators,
+  });
   await fs.promises.writeFile(checkpointFile, JSON.stringify(payload, null, 2), 'utf-8');
+}
+
+function extractDocumentMetadata(rows: import('./types').EvalRow[]): Record<string, unknown> | undefined {
+  const metadata = rows
+    .map(row => row.responseMetadata as { documentMetadata?: Record<string, unknown> } | undefined)
+    .find(value => value?.documentMetadata)?.documentMetadata;
+  return metadata;
 }
 
 main().catch((err: Error) => {
