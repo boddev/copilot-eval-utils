@@ -25,13 +25,16 @@ async function main(): Promise<void> {
     .option('--system-prompt-file <path>', 'Path to system prompt file')
     .option('--connector-id <id>', 'Microsoft 365 Copilot connector ID to target')
     .option('--m365-agent-id <id>', 'Microsoft 365 Copilot agent ID to target through WorkIQ A2A')
+    .option('--judge-agent-id <id>', 'Microsoft 365 Copilot agent ID used as the WorkIQ judge over A2A (enables concurrent scoring); falls back to EVALSCORE_JUDGE_AGENT_ID')
     .option('--connector-prompt-hint', 'Inject connector targeting text into WorkIQ prompts', false)
     .option('--no-connector-prompt-hint', 'Do not inject connector targeting text into WorkIQ prompts')
     .option('--judge-provider <provider>', 'Scoring provider: workiq, github-copilot, azure-openai', 'workiq')
+    .option('--fallback-judge-provider <provider>', 'Backup semantic judge when WorkIQ judging fails: github-copilot, azure-openai, or none')
     .option('--evaluators <names>', 'Comma-separated evaluators or "all"', 'Relevance,Coherence')
     .option('--concurrency <number>', 'Maximum concurrent request workers', '1')
     .option('--delay-ms <number>', 'Delay between requests per worker', '500')
     .option('--checkpoint-file <path>', 'JSON checkpoint file for partial high-volume results')
+    .option('--force-score', 'Re-score rows even when the input already contains scores/status')
     .option('--output-dir <path>', 'Output directory', './output')
     .option('--threshold <number>', 'Pass/fail threshold (0-100)', '70')
     .option('--tenant-id <id>', 'Microsoft 365 tenant ID to target')
@@ -59,12 +62,15 @@ async function main(): Promise<void> {
     systemPromptFile: opts.systemPromptFile as string | undefined,
     connectorId: opts.connectorId as string | undefined,
     m365AgentId: opts.m365AgentId as string | undefined,
+    judgeAgentId: (opts.judgeAgentId as string | undefined) ?? process.env.EVALSCORE_JUDGE_AGENT_ID,
     connectorPromptHint: opts.connectorPromptHint as boolean | undefined,
     judgeProvider: opts.judgeProvider as JudgeProvider,
+    fallbackJudgeProvider: opts.fallbackJudgeProvider as 'github-copilot' | 'azure-openai' | 'none' | undefined,
     evaluators: opts.evaluators as string | undefined,
     concurrency: parsePositiveInt(opts.concurrency, 1),
     delayMs: parseNonNegativeInt(opts.delayMs, 500),
     checkpointFile: opts.checkpointFile as string | undefined,
+    forceScore: opts.forceScore as boolean | undefined,
     outputDir: opts.outputDir as string,
     threshold: Number(opts.threshold),
     tenantId: opts.tenantId as string | undefined,
@@ -73,6 +79,7 @@ async function main(): Promise<void> {
 
   const evalsetPath = opts.evalset as string | undefined;
   const judgeProvider = validateJudgeProvider(options.judgeProvider ?? 'workiq');
+  const fallbackJudgeProvider = validateFallbackJudgeProvider(options.fallbackJudgeProvider as string | undefined);
   const evaluators = parseEvaluators(options.evaluators);
   const concurrency = options.concurrency ?? 1;
   const delayMs = options.delayMs ?? 500;
@@ -119,6 +126,9 @@ async function main(): Promise<void> {
   }
   if (options.m365AgentId) {
     console.error(`  M365 Agent ID: ${options.m365AgentId}`);
+  }
+  if (options.judgeAgentId) {
+    console.error(`  Judge Agent ID: ${options.judgeAgentId}`);
   }
   console.error(`  Judge:        ${judgeProvider}`);
   console.error(`  Evaluators:   ${evaluators.join(', ')}`);
@@ -184,6 +194,18 @@ async function main(): Promise<void> {
     options.checkpointFile ??
     path.join(options.outputDir, `${path.basename(inputPath, path.extname(inputPath))}-checkpoint.json`)
   );
+
+  if (options.forceScore) {
+    for (const row of rows) {
+      row.similarityScore = undefined;
+      row.metrics = undefined;
+      if (row.error?.code === 'evaluatorsFailed') {
+        row.error = undefined;
+      }
+      row.status = undefined;
+      row.assertionResults = undefined;
+    }
+  }
   const checkpoint = async () => writeCheckpoint(checkpointFile, rows, {
     inputFile: inputPath,
     judgeProvider,
@@ -191,8 +213,20 @@ async function main(): Promise<void> {
     target: buildTarget(options),
   });
 
+  // Scoring client selection:
+  //   - If judging over A2A (judgeProvider=workiq + a judgeAgentId), reuse the
+  //     A2A response client so the judge runs over REST and can scale with
+  //     --concurrency.
+  //   - If judging over WorkIQ without a dedicated judge agent, we must use
+  //     the local MCP/CLI client (A2A requires an agentId), and that path is
+  //     serialized.
+  //   - For non-WorkIQ judges (github-copilot, azure-openai), the scoring
+  //     client is unused; reuse responseClient harmlessly.
+  const useA2AJudge = judgeProvider === 'workiq' && !!options.m365AgentId && !!options.judgeAgentId;
   const responseClient: WorkIQClient = options.m365AgentId ? new A2AWorkIQClient() : new CliWorkIQClient();
-  const scoringClient: WorkIQClient = judgeProvider === 'workiq' && options.m365AgentId ? new CliWorkIQClient() : responseClient;
+  const scoringClient: WorkIQClient = judgeProvider === 'workiq' && options.m365AgentId && !options.judgeAgentId
+    ? new CliWorkIQClient()
+    : responseClient;
 
   console.error(options.m365AgentId ? 'Starting WorkIQ A2A target...' : 'Starting WorkIQ session...');
   await responseClient.start?.(options.tenantId);
@@ -226,11 +260,16 @@ async function main(): Promise<void> {
 
     // Score answers
     console.error('\nScoring answers...');
-    const scoringConcurrency = judgeProvider === 'workiq' ? 1 : concurrency;
+    // WorkIQ judging can only parallelize when it runs over A2A (judgeAgentId
+    // supplied). Otherwise it goes through the single MCP stdio child and
+    // must stay serialized.
+    const scoringConcurrency = judgeProvider === 'workiq' && !useA2AJudge ? 1 : concurrency;
     const scoredRows = await scoreAnswers(evaluatedRows, scoringClient, {
       tenantId: options.tenantId,
       judgeProvider,
+      fallbackJudgeProvider,
       evaluators,
+      judgeAgentId: useA2AJudge ? options.judgeAgentId : undefined,
       concurrency: scoringConcurrency,
       delayMs,
       threshold: options.threshold,
@@ -330,6 +369,14 @@ function validateJudgeProvider(value: string): JudgeProvider {
     return value;
   }
   throw new Error(`Unsupported judge provider "${value}". Supported providers: workiq, github-copilot, azure-openai`);
+}
+
+function validateFallbackJudgeProvider(value?: string): 'github-copilot' | 'azure-openai' | 'none' | undefined {
+  if (!value) return undefined;
+  if (value === 'none' || value === 'github-copilot' || value === 'azure-openai') {
+    return value;
+  }
+  throw new Error(`Unsupported fallback judge provider "${value}". Supported fallback providers: github-copilot, azure-openai, none`);
 }
 
 function parsePositiveInt(value: unknown, defaultValue: number): number {

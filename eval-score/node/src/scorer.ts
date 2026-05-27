@@ -17,7 +17,10 @@ export async function scoreAnswers(
   options?: {
     tenantId?: string;
     judgeProvider?: 'workiq' | 'github-copilot' | 'azure-openai';
+    fallbackJudgeProvider?: 'github-copilot' | 'azure-openai' | 'none';
     judge?: Judge;
+    fallbackJudge?: Judge;
+    judgeAgentId?: string;
     evaluators?: EvaluatorName[];
     concurrency?: number;
     delayMs?: number;
@@ -27,7 +30,8 @@ export async function scoreAnswers(
   }
 ): Promise<EvalRow[]> {
   const total = rows.length;
-  const judge = options?.judge ?? createJudge(options?.judgeProvider ?? 'workiq', client, options?.tenantId);
+  const judge = options?.judge ?? createJudge(options?.judgeProvider ?? 'workiq', client, options?.tenantId, options?.judgeAgentId);
+  const fallbackJudge = options?.fallbackJudge ?? createDefaultFallbackJudge(judge, client, options?.tenantId, options?.fallbackJudgeProvider);
   const evaluators = options?.evaluators ?? DEFAULT_M365_EVALUATORS;
   const concurrency = Math.max(1, Math.min(options?.concurrency ?? 1, total || 1));
   const delayMs = Math.max(0, options?.delayMs ?? DELAY_MS);
@@ -71,14 +75,21 @@ export async function scoreAnswers(
       const metrics: MetricResult[] = [];
       const llmEvaluators = effectiveEvaluators.filter(isLlmEvaluator);
       for (const evaluator of llmEvaluators) {
-        const score = await throttleGate.run(() => judge.score(row, evaluator));
-        metrics.push(metricFromJudge(score, judge, options?.threshold, evaluator));
+        const scored = await throttleGate.run(() => scoreWithFallback(judge, fallbackJudge, row, evaluator));
+        metrics.push(metricFromJudge(scored.score, scored.judge, options?.threshold, evaluator));
       }
-      const primaryMetric = metrics.find(metric => metric.name === 'Similarity') ?? metrics.find(metric => metric.name === 'SemanticSimilarity') ?? metrics[0];
-      row.similarityScore = primaryMetric?.score ?? 0;
       metrics.push(...evaluateDeterministicMetrics(row, effectiveEvaluators, options?.threshold));
+      const primaryMetric = metrics.find(metric => metric.name === 'Similarity') ??
+        metrics.find(metric => metric.name === 'SemanticSimilarity') ??
+        metrics[0];
       row.metrics = mergeMetrics(row.metrics, metrics);
-      row.status = deriveRowStatus(row, options?.threshold);
+      if (primaryMetric) {
+        row.similarityScore = primaryMetric.score ?? 0;
+        row.status = deriveRowStatus(row, options?.threshold);
+      } else {
+        row.similarityScore = undefined;
+        row.status = undefined;
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`\nWarning: Scoring failed for row ${i + 1}: ${message}, setting to 0\n`);
@@ -93,7 +104,7 @@ export async function scoreAnswers(
         scale: '0-100',
         threshold: options?.threshold,
       }]);
-      setRowError(row, 'evaluatorsFailed', message);
+      row.status = deriveRowStatus(row, options?.threshold);
     }
 
     completed++;
@@ -118,8 +129,67 @@ export async function scoreAnswers(
   return rows;
 }
 
+function createDefaultFallbackJudge(
+  primary: Judge,
+  client: WorkIQClient,
+  tenantId?: string,
+  configuredProvider?: 'github-copilot' | 'azure-openai' | 'none',
+): Judge | undefined {
+  if (primary.provider !== 'workiq') return undefined;
+  const disabled = process.env.EVALSCORE_DISABLE_GITHUB_FALLBACK?.toLowerCase();
+  if (configuredProvider === 'none' || disabled === '1' || disabled === 'true' || disabled === 'yes') return undefined;
+  const envProvider = process.env.EVALSCORE_FALLBACK_JUDGE_PROVIDER as 'github-copilot' | 'azure-openai' | 'none' | undefined;
+  const provider = configuredProvider ?? (envProvider === 'azure-openai' || envProvider === 'github-copilot' ? envProvider : 'github-copilot');
+  return createJudge(provider, client, tenantId);
+}
+
+async function scoreWithFallback(
+  judge: Judge,
+  fallbackJudge: Judge | undefined,
+  row: EvalRow,
+  evaluator: EvaluatorName,
+): Promise<{ score: Awaited<ReturnType<Judge['score']>>; judge: Judge }> {
+  try {
+    return { score: await judge.score(row, evaluator), judge };
+  } catch (err) {
+    if (!fallbackJudge || !isFallbackEligible(err)) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`\nWarning: ${judge.provider} judge failed for ${evaluator}; falling back to ${fallbackJudge.provider}: ${message}\n`);
+    const fallbackScore = await fallbackJudge.score(row, evaluator);
+    return {
+      score: {
+        ...fallbackScore,
+        reason: fallbackScore.reason
+          ? `Fallback from ${judge.provider} due to: ${message}. ${fallbackScore.reason}`
+          : `Fallback from ${judge.provider} due to: ${message}.`,
+      },
+      judge: fallbackJudge,
+    };
+  }
+}
+
+function isFallbackEligible(err: unknown): boolean {
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('could not parse score') ||
+    message.includes('ask_work_iq') ||
+    message.includes('mcp') ||
+    message.includes('429') ||
+    message.includes('rate limit') ||
+    message.includes('throttl') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('503') ||
+    message.includes('502') ||
+    message.includes('504')
+  );
+}
+
 export function calculateScoringResult(rows: EvalRow[], passThreshold: number): ScoringResult {
-  const scores = rows.map(row => row.similarityScore ?? 0);
+  const scores = rows
+    .map(row => row.similarityScore)
+    .filter((score): score is number => score !== undefined);
   const totalQuestions = scores.length;
   const sum = scores.reduce((acc, s) => acc + s, 0);
   const averageScore = totalQuestions > 0 ? Math.round((sum / totalQuestions) * 10) / 10 : 0;
