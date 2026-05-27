@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { A2AWorkIQClient, isRetryableWorkIQError } from '../src/workiq-client';
+import { A2AWorkIQClient, isRetryableWorkIQError, looksLikeRateLimitText } from '../src/workiq-client';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -102,5 +102,72 @@ describe('isRetryableWorkIQError', () => {
     expect(isRetryableWorkIQError(new Error('401 unauthorized'))).toBe(false);
     expect(isRetryableWorkIQError(new Error('403 forbidden'))).toBe(false);
     expect(isRetryableWorkIQError(new Error('WorkIQ EULA must be accepted'))).toBe(false);
+  });
+
+  describe('looksLikeRateLimitText', () => {
+    it('detects the Work IQ hourly rate-limit apology', () => {
+      expect(
+        looksLikeRateLimitText(
+          "You've reached the limit on the number of requests per hour. Try again in a little while."
+        )
+      ).toBe(true);
+      expect(looksLikeRateLimitText('Too many requests, please slow down.')).toBe(true);
+      expect(looksLikeRateLimitText('You are being rate-limited.')).toBe(true);
+    });
+
+    it('does not flag normal agent responses as rate-limited', () => {
+      expect(looksLikeRateLimitText('Here are the CMS dialysis state averages...')).toBe(false);
+      expect(looksLikeRateLimitText('')).toBe(false);
+      expect(looksLikeRateLimitText(undefined)).toBe(false);
+    });
+  });
+
+  it('treats a Work IQ rate-limit body as a retryable 429', async () => {
+    const responses = [
+      Response.json({
+        result: {
+          kind: 'message',
+          parts: [
+            {
+              kind: 'text',
+              text: "You've reached the limit on the number of requests per hour. Try again in a little while.",
+            },
+          ],
+        },
+      }),
+      Response.json({
+        result: {
+          kind: 'message',
+          parts: [{ kind: 'text', text: 'final answer' }],
+          contextId: 'ctx-1',
+        },
+      }),
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/.agents') || url.endsWith('/.well-known/agent-card.json')) {
+        return new Response('', { status: 404 });
+      }
+      if (init?.method === 'POST') {
+        return responses.shift() ?? new Response('exhausted', { status: 500 });
+      }
+      return new Response('', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new A2AWorkIQClient({
+      endpoint: 'https://a2a.example.test',
+      accessToken: 'token',
+      tokenCommand: '',
+      authMode: 'auto',
+      maxAttempts: 3,
+      backoffBaseMs: 1,
+    });
+
+    const response = await client.askWithMetadata('question', { agentId: 'agent-1' });
+
+    expect(response.text).toBe('final answer');
+    const postCalls = fetchMock.mock.calls.filter((call) => (call[1] as RequestInit | undefined)?.method === 'POST');
+    expect(postCalls.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -36,7 +36,22 @@ function sleep(ms: number): Promise<void> {
 function computeBackoffMs(baseMs: number, attempt: number): number {
   const exponential = baseMs * Math.pow(2, attempt - 1);
   const jitter = Math.random() * baseMs;
-  return exponential + jitter;
+  const raw = exponential + jitter;
+  const maxMs = parsePositiveIntEnv('EVALSCORE_WORKIQ_BACKOFF_MAX_MS', 60_000);
+  return Math.min(raw, maxMs);
+}
+
+const RATE_LIMIT_BODY_PATTERNS: RegExp[] = [
+  /you'?ve reached the limit on the number of requests/i,
+  /reached.*request.*limit/i,
+  /too many requests/i,
+  /rate.?limit(ed)?/i,
+  /try again in a (little while|few)/i,
+];
+
+export function looksLikeRateLimitText(text: string | undefined | null): boolean {
+  if (!text) return false;
+  return RATE_LIMIT_BODY_PATTERNS.some((rx) => rx.test(text));
 }
 
 export function isRetryableWorkIQError(err: unknown): boolean {
@@ -788,6 +803,14 @@ export class A2AWorkIQClient implements WorkIQClient {
     const text = extractA2AText(raw);
     if (!text) {
       throw new Error('WorkIQ A2A returned an empty response.');
+    }
+
+    // Work IQ returns rate-limit notices as 200 OK with apology text in the
+    // message body (not an HTTP 429). Detect those and surface them as a
+    // retryable "429" error so the withRetry wrapper kicks in with exponential
+    // backoff instead of letting the apology leak into evaluator scoring.
+    if (looksLikeRateLimitText(text)) {
+      throw new Error(`WorkIQ A2A 429 rate-limited: ${text.slice(0, 200)}`);
     }
 
     return {
