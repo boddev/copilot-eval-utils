@@ -67,11 +67,17 @@ export function parseJudgeScore(response: string): JudgeScore {
 export class WorkIQJudge implements Judge {
   provider: JudgeProvider = 'workiq';
 
-  constructor(private client: WorkIQClient, private tenantId?: string) {}
+  constructor(private client: WorkIQClient, private tenantId?: string, private agentId?: string) {}
 
   async score(row: EvalRow, evaluator: EvaluatorName = 'Similarity'): Promise<JudgeScore> {
     const prompt = buildScoringPrompt(row, evaluator);
-    const response = await this.client.ask(prompt, this.tenantId);
+    // When an agentId is supplied (A2A judging) and the underlying client
+    // supports askWithMetadata, route through it so the A2A client can target
+    // the dedicated judge agent. Otherwise fall back to the simple ask() path,
+    // which is what the MCP/CLI client implements.
+    const response = this.agentId && this.client.askWithMetadata
+      ? (await this.client.askWithMetadata(prompt, { tenantId: this.tenantId, agentId: this.agentId })).text
+      : await this.client.ask(prompt, this.tenantId);
     return parseJudgeScore(response);
   }
 }
@@ -82,14 +88,14 @@ export class GitHubCopilotJudge implements Judge {
 
   async score(row: EvalRow, evaluator: EvaluatorName = 'Similarity'): Promise<JudgeScore> {
     const command = process.env.EVALSCORE_GITHUB_COPILOT_COMMAND;
-    if (!command) {
-      throw new Error(
-        'GitHub Copilot judging requires EVALSCORE_GITHUB_COPILOT_COMMAND. ' +
-        'The command must read the rubric prompt from stdin and return JSON or a 0-100 score.'
-      );
+    const prompt = buildScoringPrompt(row, evaluator, true);
+    if (command) {
+      const response = await runPromptCommand(command, prompt);
+      const parsed = parseJudgeScore(response);
+      return { ...parsed, model: parsed.model ?? this.model };
     }
 
-    const response = await runPromptCommand(command, buildScoringPrompt(row, evaluator, true));
+    const response = await runCopilotCli(prompt);
     const parsed = parseJudgeScore(response);
     return { ...parsed, model: parsed.model ?? this.model };
   }
@@ -150,10 +156,10 @@ export class AzureOpenAIJudge implements Judge {
   }
 }
 
-export function createJudge(provider: JudgeProvider, client: WorkIQClient, tenantId?: string): Judge {
+export function createJudge(provider: JudgeProvider, client: WorkIQClient, tenantId?: string, agentId?: string): Judge {
   switch (provider) {
     case 'workiq':
-      return new WorkIQJudge(client, tenantId);
+      return new WorkIQJudge(client, tenantId, agentId);
     case 'github-copilot':
       return new GitHubCopilotJudge();
     case 'azure-openai':
@@ -206,6 +212,37 @@ function runPromptCommand(command: string, prompt: string): Promise<string> {
     });
 
     child.stdin.end(prompt);
+  });
+}
+
+function runCopilotCli(prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('copilot', [
+      '-p',
+      prompt,
+      '--silent',
+      '--allow-all',
+      '--no-custom-instructions',
+      '--no-remote',
+      '--stream',
+      'off',
+      '--output-format',
+      'text',
+    ], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+
+    child.stdout.on('data', data => stdout.push(Buffer.from(data)));
+    child.stderr.on('data', data => stderr.push(Buffer.from(data)));
+    child.on('error', reject);
+    child.on('close', code => {
+      const output = Buffer.concat(stdout).toString('utf-8');
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(`GitHub Copilot CLI judge exited with code ${code}: ${Buffer.concat(stderr).toString('utf-8')}`));
+    });
   });
 }
 

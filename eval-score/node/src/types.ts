@@ -288,11 +288,22 @@ export interface CliOptions {
   /** Microsoft 365 Copilot agent ID to target through the A2A endpoint (optional) */
   m365AgentId?: string;
 
+  /**
+   * Microsoft 365 Copilot agent ID used by the WorkIQ judge over the A2A
+   * endpoint. When set together with --m365-agent-id, scoring also runs over
+   * A2A REST (concurrently) instead of falling back to the serialized
+   * local workiq mcp client. Falls back to EVALSCORE_JUDGE_AGENT_ID.
+   */
+  judgeAgentId?: string;
+
   /** Whether to inject connector targeting text into the WorkIQ prompt */
   connectorPromptHint?: boolean;
 
   /** Judge provider used for scoring; defaults to WorkIQ */
   judgeProvider?: JudgeProvider;
+
+  /** Backup semantic judge provider for WorkIQ judge failures */
+  fallbackJudgeProvider?: JudgeProvider | 'none';
 
   /** Comma-separated evaluator names or presets; defaults to SemanticSimilarity */
   evaluators?: string;
@@ -305,6 +316,9 @@ export interface CliOptions {
 
   /** Optional checkpoint file for partial results */
   checkpointFile?: string;
+
+  /** Re-score rows even when input rows already contain scores/status. */
+  forceScore?: boolean;
 
   /** Output directory for reports and results (default: './output') */
   outputDir: string;
