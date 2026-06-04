@@ -112,6 +112,20 @@ For direct Node.js M365 agent targeting with `--m365-agent-id`, EvalScore can al
 
 MSAL auth is only used when explicitly selected for the Node.js A2A path. PowerShell direct A2A runs should use a static token or token command.
 
+## Finding M365 Agent IDs for Connector Evals
+
+When connector IDs are known but the deployed Copilot agent IDs are not, use the repository-level discovery script:
+
+```powershell
+cd C:\Users\bodonnell\src\EvaluationCLI
+
+.\scripts\Get-M365AgentConnectorMap.ps1 -TenantId "<tenant-id>"
+```
+
+It writes `eval-output\agent-connectors.json`, `.jsonl`, and `.csv`. The WorkIQ A2A endpoint defaults to the public Work IQ Gateway (`https://workiq.svc.cloud.microsoft/a2a`); override with `-WorkIqEndpoint` or `WORK_IQ_A2A_ENDPOINT` if you need a different one. Use `matches[].agentId` from the JSON or each JSONL row with `eval-score --m365-agent-id`; unresolved and ambiguous Graph-to-A2A matches are kept out of automation-ready outputs.
+
+If preflight fails with `Forbidden` for the Copilot package catalog, verify that the signed-in work/school account has `CopilotPackages.Read.All`, **Microsoft Agent 365 licensing assigned to the signed-in user** (or enroll the tenant in the Agent 365 Frontier preview from the Microsoft 365 admin center), and that the tenant is in the global Microsoft Graph cloud. For stale or wrong-tenant Graph sessions, run `Disconnect-MgGraph` and rerun the script with `-TenantId`. If you only need the deployed Copilot agent IDs and cannot resolve the licensing immediately, rerun with `-SkipPackageCatalog` to list the WorkIQ A2A agents directly so you can map them to connectors manually.
+
 ## Node.js Implementation
 
 ```powershell
