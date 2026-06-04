@@ -473,7 +473,7 @@ public sealed class PptxReader : IDatasetReader
         }
         if (local == "p")
         {
-            string text = CollectTextLeaves(node, leafLocalName: "t");
+            string text = CollectAllText(node);
             if (JsCompat.Trim(text).Length > 0)
             {
                 entries.Add(new PptxParagraphEntry(text, false));
@@ -497,7 +497,7 @@ public sealed class PptxReader : IDatasetReader
         var paragraphs = new List<string>();
         foreach (var p in shape.Descendants().Where(e => e.Name.LocalName == "p"))
         {
-            string text = CollectTextLeaves(p, leafLocalName: "t");
+            string text = CollectAllText(p);
             if (JsCompat.Trim(text).Length > 0)
             {
                 paragraphs.Add(text);
@@ -533,20 +533,36 @@ public sealed class PptxReader : IDatasetReader
     }
 
     /// <summary>
-    /// Concatenate the text content of every descendant element whose
-    /// local name is <paramref name="leafLocalName"/> (typically
-    /// <c>"t"</c>) in document order. Walks ALL descendants — including
-    /// those nested under unknown wrappers, <c>mc:AlternateContent</c>
-    /// (both <c>mc:Choice</c> AND <c>mc:Fallback</c>), and grouped
-    /// shapes — matching the TS <c>collectText</c> traversal which
-    /// recurses unconditionally.
+    /// Concatenate the value of every descendant text node in
+    /// document order — mirrors TS <c>collectText</c>
+    /// (<c>eval-gen/src/readers/index.ts:639</c>) which pushes every
+    /// <c>#text</c> value it encounters, regardless of the parent
+    /// element. fast-xml-parser with <c>trimValues:false</c>
+    /// preserves inter-element whitespace as <c>#text</c> nodes; for
+    /// indented/pretty-printed OOXML this means TS captures the
+    /// whitespace between <c>&lt;a:r&gt;</c> / <c>&lt;a:t&gt;</c>
+    /// elements. <see cref="XContainer.DescendantNodes"/> with
+    /// <see cref="XText"/> filtering matches that behavior exactly:
+    /// for compact PowerPoint-authored XML there are no such
+    /// inter-element text nodes so output is unchanged; for
+    /// pretty-printed XML the surrounding whitespace is preserved
+    /// just like in TS. (Probe <c>n1/pretty</c> in
+    /// <c>~/.copilot/session-state/.../pptx-probe/n1-probe-results.json</c>
+    /// pins this behavior.)
+    ///
+    /// <para>NB: TS's <c>tagName</c> parameter is effectively dead —
+    /// both the <c>key === tagName</c> branch and the fallback branch
+    /// of <c>collectText</c> just call <c>collect(value)</c>; only
+    /// the <c>#text</c> branch differs. So matching by element-local
+    /// name (e.g. <c>"t"</c>) under-collects vs TS. We collect ALL
+    /// text descendants here for true parity.</para>
     /// </summary>
-    private static string CollectTextLeaves(XElement root, string leafLocalName)
+    private static string CollectAllText(XElement root)
     {
         var sb = new StringBuilder();
-        foreach (var leaf in root.Descendants().Where(e => e.Name.LocalName == leafLocalName))
+        foreach (var t in root.DescendantNodes().OfType<XText>())
         {
-            sb.Append(leaf.Value);
+            sb.Append(t.Value);
         }
         return sb.ToString();
     }
@@ -623,7 +639,7 @@ public sealed class PptxReader : IDatasetReader
         }
         foreach (var p in doc.Root.DescendantsAndSelf().Where(e => e.Name.LocalName == "p"))
         {
-            string text = CollectTextLeaves(p, leafLocalName: "t");
+            string text = CollectAllText(p);
             if (JsCompat.Trim(text).Length > 0)
             {
                 paragraphs.Add(text);

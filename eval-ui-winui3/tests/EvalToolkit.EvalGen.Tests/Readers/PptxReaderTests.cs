@@ -538,6 +538,75 @@ public class PptxReaderTests : IDisposable
     }
 
     /// <summary>
+    /// Probe <c>n1/pretty</c>: TS <c>collectText</c>
+    /// (<c>eval-gen/src/readers/index.ts:639</c>) pushes every
+    /// <c>#text</c> node it encounters, regardless of parent — so
+    /// fast-xml-parser with <c>trimValues:false</c> emits whitespace
+    /// text nodes between elements in pretty-printed XML. The
+    /// recorded title for a paragraph containing
+    /// <c>&lt;a:r&gt;&lt;a:t&gt;Hello&lt;/a:t&gt;&lt;/a:r&gt;&lt;a:r&gt;&lt;a:t&gt;World&lt;/a:t&gt;&lt;/a:r&gt;</c>
+    /// indented with 4-space increments includes the inter-element
+    /// whitespace verbatim. The C# port collects all descendant
+    /// <see cref="XText"/> nodes (not just <c>&lt;a:t&gt;</c> values)
+    /// to match this exactly. Pins the Opus-4.8 round-1 N1 finding.
+    ///
+    /// <para>(Real PowerPoint authors compact XML, so production
+    /// decks are unaffected by this fix; but manually-edited or
+    /// third-party-tooled <c>.pptx</c> files can be indented, and
+    /// the byte-for-byte parity mandate requires we honor TS
+    /// behavior on those inputs.)</para>
+    /// </summary>
+    [Fact]
+    public void Read_PrettyPrintedXml_PreservesInterElementWhitespace()
+    {
+        // Inject hand-crafted pretty-printed sp manually via RawSpTree
+        // to bypass the compact-by-default fixture builder.
+        string prettySp =
+            "\n    <p:sp>" +
+            "\n      <p:txBody>" +
+            "\n        <a:p>" +
+            "\n          <a:r>" +
+            "\n            <a:t>Hello</a:t>" +
+            "\n          </a:r>" +
+            "\n          <a:r>" +
+            "\n            <a:t>World</a:t>" +
+            "\n          </a:r>" +
+            "\n        </a:p>" +
+            "\n      </p:txBody>" +
+            "\n    </p:sp>\n  ";
+
+        string path = BuildPptx("pretty.pptx",
+            new Sl { RawSpTree = prettySp });
+
+        var r = new PptxReader().Read(path);
+        Assert.Single(r.Records);
+
+        // Title is the only (and first) paragraph: its raw text content
+        // = concatenation of every #text descendant of <a:p>:
+        //   "\n          " (between <a:p> and first <a:r>)
+        // + "\n            " (between <a:r> and <a:t>)
+        // + "Hello"
+        // + "\n          " (between </a:t> and </a:r>)
+        // + "\n          " (between </a:r> and next <a:r>)
+        // + "\n            " (between <a:r> and <a:t>)
+        // + "World"
+        // + "\n          " (between </a:t> and </a:r>)
+        // + "\n        " (between </a:r> and </a:p>)
+        string expected =
+            "\n          " +
+            "\n            " +
+            "Hello" +
+            "\n          " +
+            "\n          " +
+            "\n            " +
+            "World" +
+            "\n          " +
+            "\n        ";
+        Assert.Equal(expected, r.Records[0]["title"]);
+        Assert.Equal(string.Empty, r.Records[0]["content"]);
+    }
+
+    /// <summary>
     /// Probe <c>grouped-shape</c>: <c>&lt;p:grpSp&gt;</c> is walked
     /// transparently and its child <c>&lt;p:sp&gt;</c> elements
     /// contribute paragraphs. Outer title shape supplies the title;
