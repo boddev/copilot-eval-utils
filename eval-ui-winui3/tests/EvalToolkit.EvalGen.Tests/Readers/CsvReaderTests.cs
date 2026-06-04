@@ -193,4 +193,49 @@ public class CsvReaderTests : IDisposable
         var result = new CsvReader().Read(path);
         Assert.Empty(result.Records);
     }
+
+    [Fact]
+    public void Read_RaggedRow_Short_Throws_MatchingCsvParse()
+    {
+        // Verified ground truth (round 6): csv-parse(columns:true) throws
+        //   CSV_RECORD_INCONSISTENT_COLUMNS
+        //   "Invalid Record Length: columns length is 3, got 2 on line 2"
+        // when a data row has fewer fields than the header row. We
+        // cannot silently null-pad without diverging from TS.
+        string path = WriteCsv("ragged-short.csv", "a,b,c\n1,2\n");
+        var ex = Assert.Throws<InvalidDataException>(
+            () => new CsvReader().Read(path));
+        Assert.Contains("Invalid Record Length", ex.Message);
+        Assert.Contains("columns length is 3", ex.Message);
+        Assert.Contains("got 2", ex.Message);
+        Assert.Contains("line 2", ex.Message);
+    }
+
+    [Fact]
+    public void Read_RaggedRow_Long_Throws_MatchingCsvParse()
+    {
+        // Mirror of the short case: a data row with MORE fields than the
+        // header also throws — csv-parse refuses to silently truncate.
+        string path = WriteCsv("ragged-long.csv", "a,b\n1,2,3\n");
+        var ex = Assert.Throws<InvalidDataException>(
+            () => new CsvReader().Read(path));
+        Assert.Contains("Invalid Record Length", ex.Message);
+        Assert.Contains("columns length is 2", ex.Message);
+        Assert.Contains("got 3", ex.Message);
+    }
+
+    [Fact]
+    public void Read_TrailingComma_IsRealEmptyTrailingCell_NotRagged()
+    {
+        // Verified ground truth: a row "1,2,\n" against header "a,b,c"
+        // parses as {a:"1", b:"2", c:""} — the trailing comma yields a
+        // genuine empty cell, not a missing one. This is the boundary
+        // case for the ragged-row throw.
+        string path = WriteCsv("trailing.csv", "a,b,c\n1,2,\n");
+        var result = new CsvReader().Read(path);
+        Assert.Single(result.Records);
+        Assert.Equal("1", result.Records[0]["a"]);
+        Assert.Equal("2", result.Records[0]["b"]);
+        Assert.Equal("", result.Records[0]["c"]);
+    }
 }

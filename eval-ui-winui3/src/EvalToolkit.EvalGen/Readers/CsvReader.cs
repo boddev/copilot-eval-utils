@@ -42,6 +42,12 @@ namespace EvalToolkit.EvalGen.Readers;
 ///     <c>a,,b</c> with data <c>1,2,3</c> produces
 ///     <c>{a:"1", "":"2", b:"3"}</c> — the empty string is a valid
 ///     key. csv-parse retains it; the reader does too.</item>
+///   <item><b>Ragged rows throw</b>: any data row whose field count
+///     does not equal the header count produces
+///     <c>InvalidDataException</c> with the message csv-parse uses —
+///     <c>Invalid Record Length: columns length is N, got M on line K</c>.
+///     csv-parse(columns:true) refuses to null-pad or truncate, and
+///     the reader matches that.</item>
 /// </list>
 /// </summary>
 public sealed class CsvReader : IDatasetReader
@@ -88,6 +94,21 @@ public sealed class CsvReader : IDatasetReader
         while (parser.Read())
         {
             string[] row = parser.Record ?? Array.Empty<string>();
+
+            // Parity with csv-parse(columns:true): a row whose field
+            // count does not match the header count throws
+            // CSV_RECORD_INCONSISTENT_COLUMNS rather than being
+            // null-padded / silently truncated. The line number csv-parse
+            // reports is the 1-based SOURCE line where the bad row
+            // started; CsvHelper's parser.Row tracks the same.
+            if (row.Length != headers.Length)
+            {
+                long line = parser.Row;
+                throw new InvalidDataException(
+                    $"Invalid Record Length: columns length is {headers.Length}, " +
+                    $"got {row.Length} on line {line}");
+            }
+
             var record = new DatasetRow(capacity: headers.Length);
 
             // Last-value-wins: iterate left-to-right and call Set, which
@@ -99,7 +120,7 @@ public sealed class CsvReader : IDatasetReader
             for (int i = 0; i < headers.Length; i++)
             {
                 string key = headers[i] ?? string.Empty;
-                string value = i < row.Length ? (row[i] ?? string.Empty) : string.Empty;
+                string value = row[i] ?? string.Empty;
                 record.Set(key, value);
             }
             records.Add(record);

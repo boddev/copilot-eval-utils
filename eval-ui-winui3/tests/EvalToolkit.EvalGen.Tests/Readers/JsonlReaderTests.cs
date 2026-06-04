@@ -84,6 +84,20 @@ public class JsonlReaderTests : IDisposable
     }
 
     [Fact]
+    public void Read_LoneCr_IsNotALineSeparator_MatchingTS()
+    {
+        // Verified ground truth (round 6, Opus residual): TS does
+        // content.split('\n') — a standalone CR is part of the single
+        // line, not a separator. C# StreamReader.ReadLine() used to
+        // split on lone CR and silently emit two records here; the
+        // raw-bytes+split('\n') rewrite matches TS by attempting to
+        // parse "{\"id\":1}\r{\"id\":2}" as one JSON value, which
+        // throws.
+        string path = Write("cr.jsonl", "{\"id\":1}\r{\"id\":2}\n");
+        Assert.Throws<InvalidDataException>(() => new JsonlReader().Read(path));
+    }
+
+    [Fact]
     public void Read_EmptyFile_ReturnsNoRecords()
     {
         string path = Write("empty.jsonl", "");

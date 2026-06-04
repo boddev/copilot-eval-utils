@@ -78,6 +78,26 @@ public sealed class DatasetRowJsonConverter : JsonConverter<DatasetRow>
                 // Recurse via this converter so insertion order is kept.
                 new DatasetRowJsonConverter().Write(writer, nested, options);
                 return;
+            case System.Collections.IDictionary dict:
+                // IDictionary implements IEnumerable, so it MUST be
+                // handled before the IEnumerable case below; otherwise
+                // it serializes as an array of KeyValuePair entries and
+                // silently breaks parity envelopes (round-6 finding).
+                writer.WriteStartObject();
+                foreach (System.Collections.DictionaryEntry entry in dict)
+                {
+                    string key = entry.Key switch
+                    {
+                        string s => s,
+                        null => string.Empty,
+                        _ => Convert.ToString(entry.Key,
+                            System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                    };
+                    writer.WritePropertyName(key);
+                    WriteValue(writer, entry.Value, options);
+                }
+                writer.WriteEndObject();
+                return;
             case System.Collections.IEnumerable enumerable when value is not string:
                 writer.WriteStartArray();
                 foreach (object? item in enumerable)

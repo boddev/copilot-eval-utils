@@ -78,6 +78,41 @@ public class DatasetRowJsonConverterTests
     }
 
     [Fact]
+    public void Serialize_DictionaryValue_EmitsJsonObject_NotArrayOfPairs()
+    {
+        // Round-6 GPT-5.5 finding: IDictionary implements IEnumerable,
+        // so without an explicit dictionary case it serialized as an
+        // array of KeyValuePair entries. Pin the fix so future readers
+        // that emit Dictionary<string, object?> stay shape-stable.
+        var row = new DatasetRow();
+        row.Set("dict", new Dictionary<string, object?>
+        {
+            { "a", 1L },
+            { "b", "two" },
+        });
+
+        string json = JsonSerializer.Serialize(row);
+
+        Assert.Equal("{\"dict\":{\"a\":1,\"b\":\"two\"}}", json);
+    }
+
+    [Fact]
+    public void Serialize_NonStringDictionaryKey_CoercesToString()
+    {
+        var row = new DatasetRow();
+        row.Set("dict", new Dictionary<int, string>
+        {
+            { 1, "one" },
+            { 2, "two" },
+        });
+
+        string json = JsonSerializer.Serialize(row);
+
+        Assert.Contains("\"1\":\"one\"", json);
+        Assert.Contains("\"2\":\"two\"", json);
+    }
+
+    [Fact]
     public void Deserialize_RoundTrip_PreservesShapeAndOrder()
     {
         const string json = "{\"z\":1,\"a\":\"two\",\"m\":null}";

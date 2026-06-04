@@ -46,7 +46,7 @@ public sealed class TextFileReader : IDatasetReader
         string content = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
             .GetString(bytes);
 
-        if (content.Trim().Length == 0)
+        if (JsCompat.Trim(content).Length == 0)
         {
             throw new InvalidDataException($"Text file is empty: {absolutePath}");
         }
