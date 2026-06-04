@@ -808,4 +808,82 @@ public class XlsxReaderTests : IDisposable
         Assert.Single(r.Records);
         Assert.Equal("yes", r.Records[0]["TRUE"]);
     }
+
+    // Exotic-format header parity matrix (Opus round-8 N2 ask).
+    //
+    // For each of the 8 number-format strings below, we constructed
+    // the exact same cell (number value + format string) in SheetJS
+    // and in ClosedXML and recorded the resulting header key. Probe
+    // sources are saved in the session-state directory.
+    //
+    // 7 of 8 formats produce byte-identical output between SheetJS's
+    // SSF formatter and ClosedXML's GetFormattedString — pinned here
+    // so any future drift in either library is caught immediately.
+    //
+    // The one DIVERGENT case (accounting format with the `*` repeat-
+    // fill operator) gets its own test below documenting the exact
+    // by-one-space divergence.
+    [Theory]
+    [InlineData("$#,##0.00",              1234.5,  "$1,234.50")]
+    [InlineData("0.00%",                  0.125,   "12.50%")]
+    [InlineData("0.00E+00",               12345.0, "1.23E+04")]
+    [InlineData("#,##0",                  1234567, "1,234,567")]
+    [InlineData("0\" units\"",            5,       "5 units")]
+    [InlineData("# ?/?",                  0.5,     " 1/2")]
+    [InlineData("#,##0.00;(#,##0.00)",   -1234.5,  "(1,234.50)")]
+    public void Read_ExoticFormatHeader_MatchesSheetJsExactly(string format, double value, string expectedKey)
+    {
+        string path = Path.Combine(_tmpDir, $"exotic-{Guid.NewGuid():N}.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            var h = s.Cell(1, 1);
+            h.Value = value;
+            h.Style.NumberFormat.Format = format;
+            s.Cell(2, 1).Value = "data";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("data", r.Records[0][expectedKey]);
+    }
+
+    [Fact]
+    public void Read_AccountingFormatHeader_IsKnownByOneSpaceDivergence()
+    {
+        // KNOWN RESIDUAL — accounting format `_($* #,##0.00_)` produces
+        // a ONE-EXTRA-SPACE divergence between ClosedXML and SheetJS:
+        //   SheetJS  : " $1,234.50 "  (11 chars — single space after $)
+        //   ClosedXML: " $ 1,234.50 " (12 chars — extra space between $ and digits)
+        //
+        // The divergence stems from ClosedXML's implementation of the
+        // `*` repeat-fill operator: SheetJS's SSF inserts a single fill
+        // character to align the closing `_)` width, ClosedXML inserts
+        // an additional one. This is a library-level difference, not
+        // ours — verified via empirical probes (see session-state
+        // xlsx-format-probe artifacts).
+        //
+        // Documented in XlsxReader.cs xmldoc. Pinning the current
+        // behavior here so any future ClosedXML formatter change is
+        // caught explicitly. Workaround (post-processing accounting
+        // formats specifically) was rejected as disproportionate —
+        // accounting-formatted HEADER cells are vanishingly rare in
+        // eval datasets.
+        string path = Path.Combine(_tmpDir, "accounting-header.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            var h = s.Cell(1, 1);
+            h.Value = 1234.5;
+            h.Style.NumberFormat.Format = "_($* #,##0.00_)";
+            s.Cell(2, 1).Value = "data";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        // Current C# behavior (divergent — pinned for visibility):
+        Assert.Equal("data", r.Records[0][" $ 1,234.50 "]);
+        // SheetJS parity target (would be the assertion if ClosedXML matched):
+        Assert.False(r.Records[0].ContainsKey(" $1,234.50 "));
+    }
 }

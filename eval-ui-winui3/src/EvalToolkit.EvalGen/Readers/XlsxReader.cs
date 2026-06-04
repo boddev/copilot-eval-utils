@@ -79,6 +79,20 @@ namespace EvalToolkit.EvalGen.Readers;
 /// choice), <c>.xls</c> is rejected upstream by
 /// <see cref="DatasetReader"/>.</para>
 ///
+/// <para><b>Known residual: accounting-format header keys.</b>
+/// Verified empirically (round-8 N2 probe matrix, 8 number-format
+/// strings × SheetJS SSF vs ClosedXML <c>GetFormattedString</c>):
+/// 7/8 formats match byte-exact, but the accounting format
+/// <c>_($* #,##0.00_)</c> diverges by exactly one space character —
+/// SheetJS yields <c>" $1,234.50 "</c> while ClosedXML yields
+/// <c>" $ 1,234.50 "</c>. The divergence is in ClosedXML's
+/// implementation of the <c>*</c> repeat-fill operator (which inserts
+/// one extra alignment space) and cannot be worked around without
+/// reimplementing SSF locally. Pinned via
+/// <c>Read_AccountingFormatHeader_IsKnownByOneSpaceDivergence</c>.
+/// Accounting-formatted HEADER cells are vanishingly rare in eval
+/// datasets, so the divergence is accepted rather than worked around.</para>
+///
 /// <para><b>Known residual: all-empty-string rows/columns.</b>
 /// ClosedXML's <c>RangeUsed()</c> (and every
 /// <c>XLCellsUsedOptions</c> variant — verified empirically) excludes
