@@ -263,7 +263,7 @@ async function runGenerate(options: ExtendedOptions): Promise<void> {
     format = result.format;
     sourceName = result.sourceName;
   } else if (options.file) {
-    const fileResult = readDatasetFile(options.file, { extensions: options.extensions });
+    const fileResult = await readDatasetFile(options.file, { extensions: options.extensions });
     records = fileResult.records;
     format = fileResult.format;
     sourceName = fileResult.sourceFiles.length > 1

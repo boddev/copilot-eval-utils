@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TextDecoder } from 'util';
 import { parse } from 'csv-parse/sync';
 import * as XLSX from 'xlsx';
+import { XMLParser } from 'fast-xml-parser';
 import { InputFormat } from '../types';
 
 export interface ReadResult {
@@ -22,6 +23,15 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.csv', '.tsv', '.json', '.jsonl', '.xlsx', '.xls',
   '.docx', '.pdf', '.pptx', '.txt', '.md',
 ]);
+
+/** Target size for content chunks emitted by document readers (DOCX/PDF/PPTX/TXT). */
+const CHUNK_TARGET_CHARS = 500;
+
+/** Permissive boolean env-var parsing: true/1/yes/on (case-insensitive). */
+function parseBoolEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  return /^(true|1|yes|on)$/i.test(value.trim());
+}
 
 /** Detect file format from extension */
 function detectFormat(filePath: string): InputFormat {
@@ -121,34 +131,128 @@ function readXlsx(filePath: string): Record<string, unknown>[] {
 }
 
 /**
- * Read PPTX file — extracts text from each slide as a record.
- * Uses the xlsx library's ability to read PPTX XML, falling back to
- * raw XML extraction if that fails.
+ * Chunk a long text into ~CHUNK_TARGET_CHARS records, splitting on paragraph
+ * boundaries to keep boundaries stable across runs.
  */
-function readPptx(filePath: string): Record<string, unknown>[] {
-  // PPTX files are ZIP archives with XML inside. Extract slide text.
+function chunkText(paragraphs: string[]): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  let chunk = '';
+  let chunkNum = 1;
+  const flush = (): void => {
+    const trimmed = chunk.trim();
+    if (trimmed.length === 0) return;
+    records.push({
+      chunk_number: chunkNum++,
+      content: trimmed,
+      word_count: trimmed.split(/\s+/).filter(w => w.length > 0).length,
+    });
+    chunk = '';
+  };
+  for (const para of paragraphs) {
+    const piece = para.trim();
+    if (piece.length === 0) continue;
+    if (chunk.length + piece.length > CHUNK_TARGET_CHARS && chunk.length > 0) {
+      flush();
+    }
+    chunk += (chunk.length === 0 ? '' : '\n') + piece;
+  }
+  flush();
+  return records;
+}
+
+/**
+ * Read PPTX file — extracts text from each slide, including title placeholder,
+ * body paragraphs, and any associated speaker notes.
+ *
+ * Implementation notes:
+ *   - Uses adm-zip + fast-xml-parser. Entries are first enumerated *by name*
+ *     and `getData()` is only called for the small handful of XML parts we
+ *     actually parse (slides, notes, presentation rels, slide rels, and —
+ *     optionally — masters/layouts). This avoids eagerly decompressing
+ *     embedded images, video, or OLE objects in large real-world decks.
+ *   - Slide order and per-slide notes mapping come from OPC relationships
+ *     (`ppt/_rels/presentation.xml.rels` + `ppt/slides/_rels/slideN.xml.rels`),
+ *     not from filename digits. This is what the PPTX spec actually
+ *     guarantees and survives slide reorder/delete.
+ *   - The XML parser is configured with `removeNSPrefix: true` so the
+ *     walker matches local names (`p`, `t`, `sld`, etc.) regardless of
+ *     which prefix the source file happens to use.
+ *   - Slide master / layout text (e.g. "Confidential" footers) is only
+ *     surfaced when the caller opts in via the env var
+ *     `EVALGEN_PPTX_INCLUDE_MASTER=true`. Default off because that text
+ *     would otherwise dominate every record sample (profiler always picks
+ *     the last record, and boilerplate repeats across every deck).
+ */
+async function readPptx(filePath: string): Promise<Record<string, unknown>[]> {
   const AdmZip = requireOptional('adm-zip',
     'PPTX support requires the "adm-zip" package. Install: npm install adm-zip');
   const zip = new AdmZip(filePath);
-  const entries = zip.getEntries();
+
+  // 1. Build a lazy lookup of entryName -> entry. No getData() yet.
+  const entriesByName = new Map<string, { getData: () => Buffer }>();
+  for (const entry of zip.getEntries()) {
+    entriesByName.set(entry.entryName as string, entry);
+  }
+
+  const readEntry = (name: string): Buffer | undefined => {
+    const e = entriesByName.get(name);
+    return e ? e.getData() : undefined;
+  };
+
+  // 2. Resolve slide order via presentation.xml + its rels. Fall back to
+  //    numeric file-name sort if either is missing (older / malformed decks).
+  const slideTargets = resolveSlideOrder(readEntry, entriesByName.keys());
+
+  if (slideTargets.length === 0) {
+    throw new Error('No slides found in PPTX file');
+  }
+
   const records: Record<string, unknown>[] = [];
 
-  const slideEntries = entries
-    .filter((e: any) => e.entryName.match(/^ppt\/slides\/slide\d+\.xml$/))
-    .sort((a: any, b: any) => a.entryName.localeCompare(b.entryName));
+  for (let i = 0; i < slideTargets.length; i++) {
+    const slideTarget = slideTargets[i];
+    const slidePath = slideTarget.path;
+    const buf = readEntry(slidePath);
+    if (!buf) continue;
+    const paragraphs = extractDrawingMlParagraphs(buf);
+    if (paragraphs.length === 0) continue;
+    const title = paragraphs[0];
+    const body = paragraphs.slice(1);
 
-  for (const entry of slideEntries) {
-    const xml = entry.getData().toString('utf-8');
-    // Extract text between <a:t> tags (PowerPoint text runs)
-    const textMatches = xml.match(/<a:t>([^<]*)<\/a:t>/g) ?? [];
-    const texts = textMatches.map((m: string) => m.replace(/<\/?a:t>/g, '').trim()).filter((t: string) => t.length > 0);
-    const slideNum = entry.entryName.match(/slide(\d+)/)?.[1] ?? '?';
+    // Resolve speaker notes via the slide's own rels file. The notes part
+    // is referenced by Type=".../notesSlide" Target="../notesSlides/...".
+    const notesPath = resolveSlideNotesTarget(readEntry, slidePath);
+    const notesBuf = notesPath ? readEntry(notesPath) : undefined;
+    const notes = notesBuf
+      ? extractDrawingMlParagraphs(notesBuf).join('\n').trim()
+      : '';
 
-    if (texts.length > 0) {
+    records.push({
+      slide_number: i + 1,
+      title,
+      content: body.join('\n'),
+      notes,
+    });
+  }
+
+  // Optional: surface slide master + layout text (e.g. confidentiality
+  // markings). Off by default — see file header for rationale.
+  if (parseBoolEnv(process.env.EVALGEN_PPTX_INCLUDE_MASTER)) {
+    const masterParas: string[] = [];
+    for (const name of entriesByName.keys()) {
+      if (/^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(name) ||
+          /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(name)) {
+        const buf = readEntry(name);
+        if (buf) masterParas.push(...extractDrawingMlParagraphs(buf));
+      }
+    }
+    const masterText = masterParas.join('\n').trim();
+    if (masterText.length > 0) {
       records.push({
-        slide_number: parseInt(slideNum, 10),
-        title: texts[0],
-        content: texts.join('\n'),
+        slide_number: 0,
+        title: '(slide master / layout)',
+        content: masterText,
+        notes: '',
       });
     }
   }
@@ -159,75 +263,289 @@ function readPptx(filePath: string): Record<string, unknown>[] {
   return records;
 }
 
+interface SlideTarget { path: string }
+
 /**
- * Read DOCX file — extracts text content as chunked records.
- * Uses mammoth for reliable DOCX→text conversion.
+ * Resolve the ordered list of slide part paths via OPC relationships.
+ * Returns absolute (package-relative) paths like `ppt/slides/slide1.xml`.
+ *
+ * Falls back to lexicographic-by-numeric-suffix scan over the supplied
+ * `entryNames` if the spec parts are missing or unparseable (older or
+ * minimal decks may not have parseable presentation rels).
  */
-function readDocx(filePath: string): Record<string, unknown>[] {
+function resolveSlideOrder(
+  readEntry: (name: string) => Buffer | undefined,
+  entryNames: Iterable<string>,
+): SlideTarget[] {
+  const presentationBuf = readEntry('ppt/presentation.xml');
+  const relsBuf = readEntry('ppt/_rels/presentation.xml.rels');
+
+  if (presentationBuf && relsBuf) {
+    const ridOrder = extractSlideRidOrder(presentationBuf);
+    const ridToTarget = extractRelationshipMap(relsBuf);
+    if (ridOrder.length > 0) {
+      const result: SlideTarget[] = [];
+      for (const rid of ridOrder) {
+        const target = ridToTarget.get(rid);
+        if (!target) continue;
+        // Relationship targets in presentation.xml.rels are relative to
+        // `ppt/`. Normalize to a package-absolute path.
+        result.push({ path: resolveRelTarget('ppt', target) });
+      }
+      if (result.length > 0) return result;
+    }
+  }
+
+  // Fallback: scan entries for slide parts and sort numerically. This is
+  // not spec-correct for decks that reordered or deleted slides without
+  // renaming files, but it lets minimal or malformed decks still parse.
+  const slidePaths: { path: string; num: number }[] = [];
+  for (const name of entryNames) {
+    const m = /^ppt\/slides\/slide(\d+)\.xml$/.exec(name);
+    if (m) slidePaths.push({ path: name, num: parseInt(m[1], 10) });
+  }
+  slidePaths.sort((a, b) => a.num - b.num);
+  return slidePaths.map(s => ({ path: s.path }));
+}
+
+/**
+ * Extract rId order from `<p:sldIdLst>` in `presentation.xml`.
+ *
+ * NOTE: we deliberately do **not** use `removeNSPrefix: true` here because
+ * `<p:sldId>` carries BOTH an `id` attribute (slide internal id) and an
+ * `r:id` attribute (the relationship reference). Collapsing them would
+ * make the result depend on attribute order. Per the OOXML spec the
+ * `r:` prefix is always the relationships namespace, so we can safely
+ * match exact attribute names.
+ */
+function extractSlideRidOrder(buffer: Buffer): string[] {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    preserveOrder: true,
+  });
+  const parsed = parser.parse(buffer.toString('utf-8')) as unknown;
+  const rids: string[] = [];
+  walkForElementAttrs(parsed, 'p:sldId', (attrs) => {
+    const rid = attrs?.['@_r:id'];
+    if (typeof rid === 'string' && rid.startsWith('rId')) rids.push(rid);
+  });
+  return rids;
+}
+
+/**
+ * Parse an `.rels` Relationships document into Map<rId, Target>.
+ *
+ * NOTE: `removeNSPrefix` is off — see `extractSlideRidOrder` for the
+ * rationale. The Relationships document is in the OPC relationships
+ * namespace and uses unprefixed `Id`/`Target` attributes per spec.
+ */
+function extractRelationshipMap(buffer: Buffer): Map<string, string> {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    preserveOrder: true,
+  });
+  const parsed = parser.parse(buffer.toString('utf-8')) as unknown;
+  const map = new Map<string, string>();
+  walkForElementAttrs(parsed, 'Relationship', (attrs) => {
+    const id = attrs?.['@_Id'];
+    const target = attrs?.['@_Target'];
+    if (typeof id === 'string' && typeof target === 'string') {
+      map.set(id, target);
+    }
+  });
+  return map;
+}
+
+/**
+ * Locate `<Relationship Type=".../notesSlide" Target="..."/>` in a slide's
+ * `.rels` file, returning the package-absolute notes part path.
+ */
+function resolveSlideNotesTarget(
+  readEntry: (name: string) => Buffer | undefined,
+  slidePath: string,
+): string | undefined {
+  // slidePath = 'ppt/slides/slide1.xml' → 'ppt/slides/_rels/slide1.xml.rels'
+  const lastSlash = slidePath.lastIndexOf('/');
+  const dir = slidePath.substring(0, lastSlash);
+  const file = slidePath.substring(lastSlash + 1);
+  const relsPath = `${dir}/_rels/${file}.rels`;
+  const relsBuf = readEntry(relsPath);
+  if (!relsBuf) return undefined;
+
+  // Same attribute-disambiguation reasoning as extractRelationshipMap.
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    preserveOrder: true,
+  });
+  const parsed = parser.parse(relsBuf.toString('utf-8')) as unknown;
+  let notesTarget: string | undefined;
+  walkForElementAttrs(parsed, 'Relationship', (attrs) => {
+    const type = attrs?.['@_Type'];
+    const target = attrs?.['@_Target'];
+    if (typeof type === 'string' && typeof target === 'string'
+        && type.endsWith('/notesSlide')) {
+      notesTarget = target;
+    }
+  });
+  if (!notesTarget) return undefined;
+  return resolveRelTarget(dir, notesTarget);
+}
+
+/**
+ * Resolve an OPC relationship `Target` (typically `../foo/bar.xml` or a
+ * sibling-relative path) against the directory of the source part.
+ */
+function resolveRelTarget(sourceDir: string, target: string): string {
+  if (target.startsWith('/')) {
+    // Absolute package path.
+    return target.replace(/^\//, '');
+  }
+  const parts = sourceDir.split('/').filter(p => p.length > 0);
+  const targetParts = target.split('/');
+  for (const seg of targetParts) {
+    if (seg === '..') {
+      parts.pop();
+    } else if (seg !== '.' && seg !== '') {
+      parts.push(seg);
+    }
+  }
+  return parts.join('/');
+}
+
+/**
+ * Walk a `preserveOrder: true` tree and invoke `visit(attrs, children)` for
+ * every wrapper object whose payload key is `tagName`. Attributes live on the
+ * wrapper's sibling `:@` key (fast-xml-parser convention), not on the
+ * children array — so a tag walker that recurses through values alone would
+ * miss them. This walker recurses *through* the children too so nested
+ * `<Relationship>` etc. are found.
+ */
+function walkForElementAttrs(
+  node: unknown,
+  tagName: string,
+  visit: (attrs: Record<string, unknown>, children: unknown) => void,
+): void {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        const obj = item as Record<string, unknown>;
+        if (Object.prototype.hasOwnProperty.call(obj, tagName)) {
+          const attrs = (obj[':@'] as Record<string, unknown> | undefined) ?? {};
+          visit(attrs, obj[tagName]);
+        }
+        for (const [k, v] of Object.entries(obj)) {
+          if (k === ':@') continue;
+          walkForElementAttrs(v, tagName, visit);
+        }
+      } else {
+        walkForElementAttrs(item, tagName, visit);
+      }
+    }
+    return;
+  }
+  if (node && typeof node === 'object') {
+    const obj = node as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(obj, tagName)) {
+      const attrs = (obj[':@'] as Record<string, unknown> | undefined) ?? {};
+      visit(attrs, obj[tagName]);
+    }
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === ':@') continue;
+      walkForElementAttrs(v, tagName, visit);
+    }
+  }
+}
+
+/**
+ * Walk a DrawingML XML buffer (used by PPTX slides, notes, masters, layouts)
+ * and return one string per paragraph (`a:p` / local name `p`), with all
+ * text runs (`a:t` / local name `t`) concatenated in document order. Empty
+ * paragraphs are skipped.
+ *
+ * With `removeNSPrefix: true` we match on local names so files using
+ * non-standard namespace prefixes still parse.
+ */
+function extractDrawingMlParagraphs(buffer: Buffer): string[] {
+  const parser = new XMLParser({
+    ignoreAttributes: true,
+    removeNSPrefix: true,
+    preserveOrder: true,
+    parseTagValue: false,
+    trimValues: false,
+  });
+  const parsed = parser.parse(buffer.toString('utf-8')) as unknown;
+  const paragraphs: string[] = [];
+  walkForTag(parsed, 'p', (node) => {
+    const text = collectText(node, 't');
+    if (text.trim().length > 0) paragraphs.push(text);
+  });
+  return paragraphs;
+}
+
+/** Recursively call `visit` on every node whose key is `tagName`. */
+function walkForTag(node: unknown, tagName: string, visit: (n: unknown) => void): void {
+  if (Array.isArray(node)) {
+    for (const child of node) walkForTag(child, tagName, visit);
+    return;
+  }
+  if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === tagName) {
+        visit(value);
+      } else {
+        walkForTag(value, tagName, visit);
+      }
+    }
+  }
+}
+
+/** Collect concatenated text values of all `tagName` leaves under `node`. */
+function collectText(node: unknown, tagName: string): string {
+  const out: string[] = [];
+  const collect = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const child of n) collect(child);
+      return;
+    }
+    if (n && typeof n === 'object') {
+      for (const [key, value] of Object.entries(n as Record<string, unknown>)) {
+        if (key === tagName) {
+          collect(value);
+        } else if (key === '#text' && typeof value === 'string') {
+          out.push(value);
+        } else {
+          collect(value);
+        }
+      }
+    } else if (typeof n === 'string') {
+      out.push(n);
+    }
+  };
+  collect(node);
+  return out.join('');
+}
+
+/**
+ * Read DOCX file — extracts paragraph text via mammoth (which actually walks
+ * the OpenXml document structure: paragraphs, lists, tables, headers), then
+ * chunks into ~CHUNK_TARGET_CHARS records.
+ */
+async function readDocx(filePath: string): Promise<Record<string, unknown>[]> {
   const mammoth = requireOptional('mammoth',
     'DOCX support requires the "mammoth" package. Install: npm install mammoth');
 
-  // mammoth is async, but we need sync here. Read the buffer and use extractRawText sync-style.
   const buffer = fs.readFileSync(filePath);
+  const { value } = await mammoth.extractRawText({ buffer }) as { value: string };
+  const text = value ?? '';
 
-  // Use a sync workaround: mammoth provides extractRawText which returns a promise,
-  // but we can use the internal sync path via the buffer.
-  // For robustness, fall back to direct XML extraction from the DOCX zip.
-  const AdmZip = requireOptional('adm-zip',
-    'DOCX support requires the "adm-zip" package. Install: npm install adm-zip');
-  const zip = new AdmZip(buffer);
-  const docEntry = zip.getEntry('word/document.xml');
-  if (!docEntry) {
-    throw new Error('Invalid DOCX file: no word/document.xml found');
-  }
+  // mammoth separates paragraphs with \n (single newline). Split on \n and
+  // drop empties. Stable, deterministic ordering is preserved.
+  const paragraphs = text.split(/\r?\n/).map(p => p.trim()).filter(p => p.length > 0);
 
-  const xml = docEntry.getData().toString('utf-8');
-
-  // Extract text from <w:t> tags (Word text runs)
-  const textMatches = xml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? [];
-  const allText = textMatches
-    .map((m: string) => m.replace(/<w:t[^>]*>/g, '').replace(/<\/w:t>/g, '').trim())
-    .join(' ');
-
-  // Split into paragraph-like chunks by double-spacing or XML paragraph boundaries
-  const paragraphMatches = xml.match(/<w:p[ >][\s\S]*?<\/w:p>/g) ?? [];
-  const paragraphs: string[] = [];
-
-  for (const pXml of paragraphMatches) {
-    const pTextMatches = pXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) ?? [];
-    const pText = pTextMatches
-      .map((m: string) => m.replace(/<w:t[^>]*>/g, '').replace(/<\/w:t>/g, ''))
-      .join('');
-    if (pText.trim().length > 0) {
-      paragraphs.push(pText.trim());
-    }
-  }
-
-  // Create records by chunking paragraphs (~500 chars each, like connector content chunks)
-  const records: Record<string, unknown>[] = [];
-  let chunk = '';
-  let chunkNum = 1;
-
-  for (const para of paragraphs) {
-    if (chunk.length + para.length > 500 && chunk.length > 0) {
-      records.push({
-        chunk_number: chunkNum++,
-        content: chunk.trim(),
-        word_count: chunk.trim().split(/\s+/).length,
-      });
-      chunk = '';
-    }
-    chunk += para + '\n';
-  }
-
-  if (chunk.trim().length > 0) {
-    records.push({
-      chunk_number: chunkNum,
-      content: chunk.trim(),
-      word_count: chunk.trim().split(/\s+/).length,
-    });
-  }
-
+  const records = chunkText(paragraphs);
   if (records.length === 0) {
     throw new Error('No text content found in DOCX file');
   }
@@ -235,80 +553,46 @@ function readDocx(filePath: string): Record<string, unknown>[] {
 }
 
 /**
- * Read PDF file — extracts text content as chunked records.
- * Uses pdf-parse for text extraction.
+ * Read PDF file — extracts text via pdf-parse v2's PDFParse class (handles
+ * FlateDecode-compressed streams, multi-page documents, and standard
+ * encodings via pdf.js under the hood) and chunks into ~CHUNK_TARGET_CHARS
+ * records.
  */
-function readPdf(filePath: string): Record<string, unknown>[] {
-  const pdfParse = requireOptional('pdf-parse',
+async function readPdf(filePath: string): Promise<Record<string, unknown>[]> {
+  const pdfParseModule = requireOptional('pdf-parse',
     'PDF support requires the "pdf-parse" package. Install: npm install pdf-parse');
+  const PDFParse = pdfParseModule.PDFParse ?? pdfParseModule.default?.PDFParse ?? pdfParseModule;
+  if (typeof PDFParse !== 'function') {
+    throw new Error('pdf-parse: unable to locate PDFParse class on the imported module');
+  }
 
   const buffer = fs.readFileSync(filePath);
-
-  // pdf-parse is async — use a sync workaround via direct text extraction
-  // For simplicity, extract text page by page using the raw PDF buffer
-  // We'll use a synchronous approach: parse returns a promise, so we need to handle it.
-  // Since the CLI is async anyway, we'll mark this function and handle upstream.
-  // For now, use a simpler extraction: read the buffer and look for text streams.
-
-  // Actually, since pdf-parse is the standard and is async, we'll throw a helpful
-  // error directing to async usage, or use the sync file-based approach.
-
-  // Pragmatic approach: read the file, use pdf-parse's internal modules
-  let text = '';
+  const parser = new PDFParse({ data: buffer });
+  let result: { text: string };
   try {
-    // Attempt synchronous text extraction from PDF text objects
-    const content = buffer.toString('latin1');
-    const textMatches = content.match(/\(([^)]+)\)/g) ?? [];
-    text = textMatches
-      .map(m => m.slice(1, -1))
-      .filter(t => t.length > 2 && /[a-zA-Z]/.test(t))
-      .join(' ');
-  } catch {
-    // Fallback
-  }
-
-  if (text.length < 10) {
-    // If basic extraction failed, indicate async parsing is needed
-    // Store the file path for the LLM to reference
-    return [{
-      content: `[PDF file: ${path.basename(filePath)}. Text extraction requires async processing. Use pdf-parse for full extraction.]`,
-      file_type: 'pdf',
-      file_name: path.basename(filePath),
-      file_size_bytes: buffer.length,
-    }];
-  }
-
-  // Chunk into ~500 char records
-  const records: Record<string, unknown>[] = [];
-  const words = text.split(/\s+/);
-  let chunk = '';
-  let chunkNum = 1;
-
-  for (const word of words) {
-    if (chunk.length + word.length > 500 && chunk.length > 0) {
-      records.push({
-        chunk_number: chunkNum++,
-        content: chunk.trim(),
-        word_count: chunk.trim().split(/\s+/).length,
-      });
-      chunk = '';
+    result = await parser.getText() as { text: string };
+  } finally {
+    if (typeof parser.destroy === 'function') {
+      await parser.destroy();
     }
-    chunk += word + ' ';
   }
+  // pdf-parse joins page text with \n. Strip control characters and collapse
+  // runs of whitespace within a line, but preserve line breaks.
+  const cleaned = (result.text ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+    .replace(/\r\n?/g, '\n');
 
-  if (chunk.trim().length > 0) {
-    records.push({
-      chunk_number: chunkNum,
-      content: chunk.trim(),
-      word_count: chunk.trim().split(/\s+/).length,
-    });
+  const paragraphs = cleaned
+    .split(/\n{1,}/)
+    .map(p => p.replace(/[ \t]+/g, ' ').trim())
+    .filter(p => p.length > 0);
+
+  const records = chunkText(paragraphs);
+  if (records.length === 0) {
+    throw new Error('No text content found in PDF file');
   }
-
-  return records.length > 0 ? records : [{
-    content: text.slice(0, 2000),
-    file_type: 'pdf',
-    file_name: path.basename(filePath),
-  }];
+  return records;
 }
 
 /** Read plain text / markdown file — chunks into records */
@@ -352,6 +636,7 @@ function readTextFile(filePath: string): Record<string, unknown>[] {
 /** Helper to require an optional dependency with a clear error message */
 function requireOptional(packageName: string, errorMessage: string): any {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require(packageName);
   } catch {
     throw new Error(errorMessage);
@@ -359,7 +644,7 @@ function requireOptional(packageName: string, errorMessage: string): any {
 }
 
 /** Read a single dataset file and return records */
-function readSingleFile(absPath: string): ReadResult {
+async function readSingleFile(absPath: string): Promise<ReadResult> {
   const format = detectFormat(absPath);
 
   let records: Record<string, unknown>[];
@@ -377,13 +662,13 @@ function readSingleFile(absPath: string): ReadResult {
       records = readXlsx(absPath);
       break;
     case 'docx':
-      records = readDocx(absPath);
+      records = await readDocx(absPath);
       break;
     case 'pdf':
-      records = readPdf(absPath);
+      records = await readPdf(absPath);
       break;
     case 'pptx':
-      records = readPptx(absPath);
+      records = await readPptx(absPath);
       break;
     case 'txt':
       records = readTextFile(absPath);
@@ -435,7 +720,7 @@ function discoverFilesInDirectory(dirPath: string, options: ReadDatasetOptions):
  *
  * All records are tagged with `_source_file` for provenance.
  */
-export function readDatasetFile(fileInput: string, options: ReadDatasetOptions = {}): ReadResult & { sourceFiles: string[] } {
+export async function readDatasetFile(fileInput: string, options: ReadDatasetOptions = {}): Promise<ReadResult & { sourceFiles: string[] }> {
   // Split on commas to support multiple files
   const inputs = fileInput.split(',').map(s => s.trim()).filter(s => s.length > 0);
   const filesToRead: string[] = [];
@@ -467,7 +752,7 @@ export function readDatasetFile(fileInput: string, options: ReadDatasetOptions =
   let primaryFormat: InputFormat = 'csv';
 
   for (const filePath of filesToRead) {
-    const { records, format } = readSingleFile(filePath);
+    const { records, format } = await readSingleFile(filePath);
     primaryFormat = format; // Last format wins (for profiling)
 
     // Tag each record with its source file

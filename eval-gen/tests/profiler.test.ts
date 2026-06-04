@@ -6,8 +6,8 @@ import { profileDataset } from '../src/profiler';
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 describe('profileDataset', () => {
-  it('profiles CSV dataset correctly', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('profiles CSV dataset correctly', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     expect(profile.fileName).toBe('suppliers.csv');
@@ -24,8 +24,8 @@ describe('profileDataset', () => {
     expect(valueCol!.dataType).toBe('number');
   });
 
-  it('profiles JSON dataset correctly', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'projects.json'));
+  it('profiles JSON dataset correctly', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'projects.json'));
     const profile = profileDataset(records, 'projects.json', format);
 
     expect(profile.fileName).toBe('projects.json');
@@ -38,16 +38,16 @@ describe('profileDataset', () => {
     expect(budgetCol!.max).toBe(750000);
   });
 
-  it('detects candidate key columns', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('detects candidate key columns', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     // supplier_id should be detected as a candidate key
     expect(profile.candidateKeyColumns).toContain('supplier_id');
   });
 
-  it('detects categorical columns with value counts', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('detects categorical columns with value counts', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     const riskCol = profile.columns.find(c => c.name === 'risk_rating');
@@ -56,16 +56,16 @@ describe('profileDataset', () => {
     expect(riskCol!.valueCounts!['High']).toBeGreaterThan(0);
   });
 
-  it('selects sample records', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('selects sample records', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     expect(profile.sampleRecords.length).toBeGreaterThan(0);
     expect(profile.sampleRecords.length).toBeLessThanOrEqual(20);
   });
 
-  it('detects null counts', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('detects null counts', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     // Row SUP-011 has all empty fields
@@ -73,7 +73,7 @@ describe('profileDataset', () => {
     expect(nameCol!.nullCount).toBeGreaterThan(0);
   });
 
-  it('throws on empty dataset', () => {
+  it('throws on empty dataset', async () => {
     expect(() => profileDataset([], 'empty.csv', 'csv')).toThrow('Cannot profile an empty dataset');
   });
 });

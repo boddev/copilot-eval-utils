@@ -30,6 +30,15 @@ jobs:
       - name: Install Eval UI dependencies
         run: npm ci --prefix eval-ui
 
+      - name: Install eval-gen dependencies
+        run: npm ci --prefix eval-gen
+
+      - name: Lint eval-gen
+        run: npm run lint --prefix eval-gen
+
+      - name: Test eval-gen (gates reader fixes for PDF/DOCX/PPTX)
+        run: npm test --prefix eval-gen
+
       - name: Build Windows executables
         run: npm run package:win --prefix eval-ui
 

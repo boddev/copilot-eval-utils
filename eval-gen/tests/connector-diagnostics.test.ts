@@ -13,21 +13,21 @@ import { GeneratedEvalItem } from '../src/types';
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 describe('loadConnectorSchema', () => {
-  it('loads valid connector schema', () => {
+  it('loads valid connector schema', async () => {
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
     expect(schema.name).toBe('WSP Suppliers Connector');
     expect(schema.contentFields.length).toBeGreaterThan(0);
     expect(schema.contentFields).toContain('supplier_name');
   });
 
-  it('throws on missing file', () => {
+  it('throws on missing file', async () => {
     expect(() => loadConnectorSchema('nonexistent.json')).toThrow('not found');
   });
 });
 
 describe('analyzeFieldCoverage', () => {
-  it('identifies indexed and unindexed fields', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('identifies indexed and unindexed fields', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 
@@ -43,8 +43,8 @@ describe('analyzeFieldCoverage', () => {
     expect(coverage.indexedFields).toContain('supplier_name');
   });
 
-  it('reports coverage percentage', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('reports coverage percentage', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 
@@ -69,8 +69,8 @@ describe('runDiagnostics', () => {
     };
   }
 
-  it('flags questions targeting unindexed fields', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('flags questions targeting unindexed fields', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 
@@ -86,8 +86,8 @@ describe('runDiagnostics', () => {
     expect(report.itemDiagnostics[0].issues.some(i => i.includes('unindexed'))).toBe(true);
   });
 
-  it('flags aggregation questions without summary items', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('flags aggregation questions without summary items', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 
@@ -102,8 +102,8 @@ describe('runDiagnostics', () => {
     expect(report.aggregationWarnings.length).toBeGreaterThan(0);
   });
 
-  it('passes clean questions', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('passes clean questions', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 
@@ -120,8 +120,8 @@ describe('runDiagnostics', () => {
 });
 
 describe('formatDiagnosticReport', () => {
-  it('produces readable markdown', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('produces readable markdown', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const schema = loadConnectorSchema(path.join(FIXTURES, 'connector-schema.json'));
 

@@ -7,8 +7,8 @@ import { extractFacts, groupFactsByRecord, summarizeFacts } from '../src/fact-ex
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 describe('extractFacts', () => {
-  it('extracts facts from CSV dataset', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('extracts facts from CSV dataset', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 100);
 
@@ -24,8 +24,8 @@ describe('extractFacts', () => {
     }
   });
 
-  it('extracts facts from JSON dataset', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'projects.json'));
+  it('extracts facts from JSON dataset', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'projects.json'));
     const profile = profileDataset(records, 'projects.json', format);
     const facts = extractFacts(records, profile, 50);
 
@@ -34,8 +34,8 @@ describe('extractFacts', () => {
     expect(projectFact).toBeDefined();
   });
 
-  it('skips null/empty values', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('skips null/empty values', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 200);
 
@@ -47,16 +47,16 @@ describe('extractFacts', () => {
     }
   });
 
-  it('respects maxFacts limit', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('respects maxFacts limit', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 10);
 
     expect(facts.length).toBeLessThanOrEqual(10);
   });
 
-  it('honors explicit targetRecords (decoupled from maxFacts)', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('honors explicit targetRecords (decoupled from maxFacts)', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
 
     // Default behavior: small maxFacts caps the row pool because the function
@@ -84,8 +84,8 @@ describe('extractFacts', () => {
 });
 
 describe('groupFactsByRecord', () => {
-  it('groups facts by row reference', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('groups facts by row reference', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 100);
 
@@ -102,8 +102,8 @@ describe('groupFactsByRecord', () => {
 });
 
 describe('summarizeFacts', () => {
-  it('produces a readable summary', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('produces a readable summary', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 100);
 
@@ -112,8 +112,8 @@ describe('summarizeFacts', () => {
     expect(summary.split('\n').length).toBeLessThanOrEqual(5);
   });
 
-  it('includes [f-N] fact IDs so the LLM can cite specific facts', () => {
-    const { records, format } = readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
+  it('includes [f-N] fact IDs so the LLM can cite specific facts', async () => {
+    const { records, format } = await readDatasetFile(path.join(FIXTURES, 'suppliers.csv'));
     const profile = profileDataset(records, 'suppliers.csv', format);
     const facts = extractFacts(records, profile, 100);
 
