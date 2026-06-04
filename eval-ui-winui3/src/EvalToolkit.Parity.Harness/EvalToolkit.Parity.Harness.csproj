@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    EvalToolkit.Parity.Harness — internal tooling library.
+
+    Shells out to the TypeScript reference implementation
+    (`eval-gen/dist/parity-entrypoint.js`) and compares its normalized
+    JSON envelope against the C# port's equivalent surface. Used by:
+
+      - EvalToolkit.Parity.Tests       (xUnit gating; CI parity gate)
+      - future ad-hoc CLI tools that want to debug a single fixture
+
+    Per round-1 reviewer guidance (GPT-5.5 and Opus-4.8 both noted
+    this): the harness lives in a library project — NOT buried inside
+    test method bodies — so it can be re-used outside the test runner
+    when investigating a real parity regression on a customer fixture.
+
+    Not packaged or shipped (IsPackable=false). Not referenced by any
+    engine project. The dependency graph is: tests/CLI -> harness ->
+    nothing.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>EvalToolkit.Parity.Harness</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    No PackageReferences yet. System.Text.Json is in the BCL on
+    net10.0 so the JSON comparer doesn't need a Newtonsoft pull. If
+    the harness later needs a structured-diff library, add it via CPM.
+  -->
+
+</Project>

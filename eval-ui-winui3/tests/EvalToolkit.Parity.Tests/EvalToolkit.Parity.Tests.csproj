@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\EvalToolkit.EvalGen\EvalToolkit.EvalGen.csproj" />
     <ProjectReference Include="..\..\src\EvalToolkit.EvalScore\EvalToolkit.EvalScore.csproj" />
     <ProjectReference Include="..\..\src\EvalToolkit.Core\EvalToolkit.Core.csproj" />
+    <ProjectReference Include="..\..\src\EvalToolkit.Parity.Harness\EvalToolkit.Parity.Harness.csproj" />
   </ItemGroup>
 
 </Project>
