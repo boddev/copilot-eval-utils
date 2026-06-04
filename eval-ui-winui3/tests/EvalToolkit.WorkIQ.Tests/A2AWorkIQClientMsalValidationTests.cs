@@ -107,6 +107,34 @@ public class A2AWorkIQClientMsalValidationTests : IDisposable
     }
 
     [Fact]
+    public async Task LazyMsalProvider_AskTime_UsesStartAsyncTenantOverride()
+    {
+        // Per round-2 reviewer feedback (GPT-5.5 blocking): the lazy
+        // MSAL provider's config builder must consult the tenant ID
+        // override captured at StartAsync()/Ask() time, not at
+        // construction time. Without the fix, FromEnvironment() would
+        // be called with a null tenant, throwing
+        // ArgumentException("TenantId is required") at first token
+        // request — a programmer-style error that bypasses the
+        // operator-friendly "MSAL A2A auth requires …" message and
+        // breaks `eval-score --tenant-id <guid>` ergonomics.
+        Environment.SetEnvironmentVariable(EnvVars.EvalScoreA2aClientId, "11111111-1111-1111-1111-111111111111");
+        Environment.SetEnvironmentVariable(EnvVars.EvalScoreA2aScopes, "https://example.invalid/.default");
+
+        await using var client = new A2AWorkIQClient(new A2AWorkIQClientOptions
+        {
+            Endpoint = "https://example.invalid",
+            AuthMode = "msal",
+        });
+
+        // No exception when tenantId is supplied at StartAsync time
+        // — this round-trips through ValidateMsalConfig AND any later
+        // lazy MSAL config build will inherit the same tenant
+        // override via the Func<string?> tenantIdProvider callback.
+        await client.StartAsync(tenantId: "22222222-2222-2222-2222-222222222222");
+    }
+
+    [Fact]
     public async Task StartAsync_MsalModeWithExplicitProvider_SkipsMsalValidation()
     {
         // Per Opus-4.8 plan-stage review (M4): explicit provider

@@ -25,7 +25,7 @@ namespace EvalToolkit.WorkIQ;
 /// uncached. The provider's first silent acquire will fail and the
 /// device-code / interactive path will take over.</para>
 /// </summary>
-public sealed class MsalA2ATokenCachePlugin
+public sealed class MsalA2ATokenCachePlugin : IDisposable
 {
     /// <summary>Default cache file location (<c>%LOCALAPPDATA%\EvalToolkit\msal-a2a-cache.bin</c>).</summary>
     public string DpapiCachePath { get; }
@@ -35,6 +35,7 @@ public sealed class MsalA2ATokenCachePlugin
 
     private readonly StorageCreationProperties _storageProperties;
     private readonly string _clientId;
+    private readonly SemaphoreSlim _registrationGate = new(1, 1);
     private MsalCacheHelper? _helper;
     private bool _legacyImportAttempted;
     private bool _importedFromLegacy;
@@ -72,52 +73,78 @@ public sealed class MsalA2ATokenCachePlugin
     {
         ArgumentNullException.ThrowIfNull(app);
 
-        if (_helper is null)
+        // Per round-2 reviewer feedback (R2): guard the whole flow
+        // with a semaphore so concurrent acquirers can't race on
+        // _legacyImportAttempted check-set or call RegisterCache more
+        // than once. The caller (PcaTokenAcquirer) also has a
+        // semaphore, but defense-in-depth here lets the plugin be
+        // used directly under concurrent load.
+        await _registrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            _helper = await MsalCacheHelper.CreateAsync(_storageProperties).ConfigureAwait(false);
-        }
-
-        // Per Opus-4.8 plan-stage review (M5): do the legacy import
-        // BEFORE registering the helper. Otherwise BeforeAccess fires
-        // on the first cache op and loads the (empty) DPAPI bin,
-        // clobbering anything we deserialized. SaveUnencryptedTokenCache
-        // writes V3 bytes through the helper's encrypted storage; the
-        // subsequent RegisterCache + GetAccountsAsync round-trip then
-        // loads the imported data via BeforeAccess.
-        if (!_legacyImportAttempted)
-        {
-            _legacyImportAttempted = true;
-            TryImportLegacyCache();
-        }
-
-        _helper.RegisterCache(app.UserTokenCache);
-
-        // Per Opus-4.8 plan-stage review (M5): if the import didn't
-        // actually produce any usable accounts (corrupted bytes,
-        // wrong client/tenant), wipe the DPAPI cache so we don't
-        // carry junk forward — the next call falls through to
-        // device-code / interactive. Use file-level delete rather
-        // than MsalCacheHelper.Clear() (which is obsolete) since we
-        // know the cache is functionally empty.
-        if (_importedFromLegacy)
-        {
-            IEnumerable<IAccount> accounts = await app.GetAccountsAsync().ConfigureAwait(false);
-            if (!accounts.Any())
+            if (_helper is null)
             {
-                try
+                _helper = await MsalCacheHelper.CreateAsync(_storageProperties).ConfigureAwait(false);
+            }
+
+            // Per Opus-4.8 plan-stage review (M5): do the legacy import
+            // BEFORE registering the helper. Otherwise BeforeAccess fires
+            // on the first cache op and loads the (empty) DPAPI bin,
+            // clobbering anything we deserialized. SaveUnencryptedTokenCache
+            // writes V3 bytes through the helper's encrypted storage; the
+            // subsequent RegisterCache + GetAccountsAsync round-trip then
+            // loads the imported data via BeforeAccess.
+            if (!_legacyImportAttempted)
+            {
+                _legacyImportAttempted = true;
+                TryImportLegacyCache();
+            }
+
+            _helper.RegisterCache(app.UserTokenCache);
+
+            // Per Opus-4.8 plan-stage review (M5): if the import didn't
+            // actually produce any usable accounts (corrupted bytes,
+            // wrong client/tenant), wipe the DPAPI cache so we don't
+            // carry junk forward — the next call falls through to
+            // device-code / interactive. Use file-level delete rather
+            // than MsalCacheHelper.Clear() (which is obsolete) since we
+            // know the cache is functionally empty.
+            if (_importedFromLegacy)
+            {
+                IEnumerable<IAccount> accounts = await app.GetAccountsAsync().ConfigureAwait(false);
+                if (!accounts.Any())
                 {
-                    if (File.Exists(DpapiCachePath))
+                    try
                     {
-                        File.Delete(DpapiCachePath);
+                        if (File.Exists(DpapiCachePath))
+                        {
+                            File.Delete(DpapiCachePath);
+                        }
                     }
+                    catch
+                    {
+                        // Best-effort delete.
+                    }
+                    _importedFromLegacy = false;
                 }
-                catch
-                {
-                    // Best-effort delete.
-                }
-                _importedFromLegacy = false;
             }
         }
+        finally
+        {
+            _registrationGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Disposes the registration semaphore. The plugin is typically
+    /// long-lived (one per provider), but consumers that create+drop
+    /// it (e.g. integration tests) should dispose to release the
+    /// underlying handle. Disposing while a registration is in flight
+    /// is undefined behavior — callers must serialize.
+    /// </summary>
+    public void Dispose()
+    {
+        _registrationGate.Dispose();
     }
 
     /// <summary>

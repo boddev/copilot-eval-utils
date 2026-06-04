@@ -57,7 +57,15 @@ public sealed class A2AWorkIQClient : IWorkIQClient
             _authMode,
             msalConfig: null,
             msalBroker: options.InteractiveAuthBroker,
-            options.TokenProvider);
+            options.TokenProvider,
+            // Per round-2 reviewer feedback (GPT-5.5): _tenantId is
+            // assigned at StartAsync()/AskWithMetadataAsync() time,
+            // *after* the factory has already created the lazy
+            // provider. Supply a callback so the lazy MSAL config is
+            // built with the current tenant override at first token
+            // request, not whatever was captured at construction
+            // (which would always be null).
+            msalTenantIdProvider: () => _tenantId);
         _httpClient = options.HttpClient ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _ownsHttpClient = options.HttpClient is null;
         _timeoutMs = options.TimeoutMs ?? WorkIQOptionsDefaults.ParseTimeoutMs();

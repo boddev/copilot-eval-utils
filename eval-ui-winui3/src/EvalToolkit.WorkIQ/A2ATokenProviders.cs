@@ -187,13 +187,23 @@ public static class A2ATokenProviderFactory
     /// <param name="msalBroker">
     /// Optional interactive broker (WinUI shell injects WAM).
     /// </param>
+    /// <param name="msalTenantIdProvider">
+    /// Per round-2 reviewer feedback (GPT-5.5): provides a tenant ID
+    /// override at the moment of lazy MSAL config construction.
+    /// Needed because <see cref="A2AWorkIQClient.StartAsync(string?,System.Threading.CancellationToken)"/>
+    /// captures the runtime tenant ID *after* the factory has built
+    /// the lazy provider; without this callback the lazy config would
+    /// be built with a null tenant and the operator-friendly
+    /// validation message would be bypassed.
+    /// </param>
     public static IA2ATokenProvider Create(
         string? accessToken,
         string? tokenCommand,
         string? authMode,
         MsalA2ATokenProviderConfig? msalConfig,
         IInteractiveAuthBroker? msalBroker,
-        IA2ATokenProvider? explicitProvider = null)
+        IA2ATokenProvider? explicitProvider = null,
+        Func<string?>? msalTenantIdProvider = null)
     {
         if (explicitProvider is not null)
         {
@@ -224,7 +234,8 @@ public static class A2ATokenProviderFactory
             // an unvalidated client.
             return new LazyMsalA2ATokenProvider(() =>
             {
-                MsalA2ATokenProviderConfig effective = msalConfig ?? MsalA2ATokenProviderConfig.FromEnvironment();
+                MsalA2ATokenProviderConfig effective = msalConfig
+                    ?? MsalA2ATokenProviderConfig.FromEnvironment(msalTenantIdProvider?.Invoke());
                 return new MsalA2ATokenProvider(effective, msalBroker);
             });
         }

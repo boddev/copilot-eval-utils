@@ -124,37 +124,58 @@ public sealed class MsalA2ATokenProvider : IA2ATokenProvider
 
     public Task<string> GetTokenAsync(bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
-        // 1) Hot-path: in-memory cache with TS-matching 5-minute skew.
-        if (!forceRefresh)
+        // Force path: always acquire fresh; never publishes to or
+        // observes _inFlight (matches TS where forceRefresh bypasses
+        // the cached-promise dedupe entirely).
+        if (forceRefresh)
         {
-            lock (_stateLock)
-            {
-                if (TryGetCachedTokenLocked(out string? hit))
-                {
-                    return Task.FromResult(hit!);
-                }
-                // 2) De-dupe a concurrent non-force acquisition.
-                if (_inFlight is not null)
-                {
-                    return _inFlight;
-                }
-            }
+            return AcquireAndCacheAsync(forceRefresh: true, cancellationToken);
         }
 
-        // Start fresh acquisition outside the lock so PCA's async path
-        // doesn't synchronously hold _stateLock; re-take the lock to
-        // publish _inFlight atomically.
-        Task<string> acquisition = AcquireAndCacheAsync(forceRefresh, cancellationToken);
-
-        if (!forceRefresh)
+        // Non-force path: hot-cache check → in-flight dedupe →
+        // publish a new TaskCompletionSource as the in-flight task
+        // *atomically inside the lock*, then fire the real
+        // acquisition outside the lock and settle the TCS. This
+        // closes the round-2 reviewer race window where two callers
+        // could both pass the no-_inFlight check and start
+        // concurrent acquisitions before either of them published a
+        // task to _inFlight (B1 from GPT-5.5 + Opus-4.8 round 2).
+        TaskCompletionSource<string> tcs;
+        lock (_stateLock)
         {
-            lock (_stateLock)
+            if (TryGetCachedTokenLocked(out string? hit))
             {
-                _inFlight ??= acquisition;
+                return Task.FromResult(hit!);
+            }
+            if (_inFlight is not null)
+            {
                 return _inFlight;
             }
+            tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _inFlight = tcs.Task;
         }
-        return acquisition;
+
+        // Run outside the lock so the async path doesn't run any of
+        // its synchronous prelude under _stateLock.
+        _ = RunAndSettleAsync(tcs, cancellationToken);
+        return tcs.Task;
+    }
+
+    private async Task RunAndSettleAsync(TaskCompletionSource<string> tcs, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string token = await AcquireAndCacheAsync(forceRefresh: false, cancellationToken).ConfigureAwait(false);
+            tcs.TrySetResult(token);
+        }
+        catch (OperationCanceledException oce)
+        {
+            tcs.TrySetCanceled(oce.CancellationToken);
+        }
+        catch (Exception ex)
+        {
+            tcs.TrySetException(ex);
+        }
     }
 
     private async Task<string> AcquireAndCacheAsync(bool forceRefresh, CancellationToken cancellationToken)
@@ -298,11 +319,12 @@ public sealed class MsalA2ATokenProvider : IA2ATokenProvider
     }
 
     /// <summary>Production acquirer wrapping a real PCA + cache plugin.</summary>
-    private sealed class PcaTokenAcquirer : IMsalTokenAcquirer
+    private sealed class PcaTokenAcquirer : IMsalTokenAcquirer, IDisposable
     {
         private readonly IPublicClientApplication _app;
         private readonly MsalA2ATokenCachePlugin _cachePlugin;
-        private bool _cacheRegistered;
+        private readonly SemaphoreSlim _registrationGate = new(1, 1);
+        private volatile bool _cacheRegistered;
 
         public PcaTokenAcquirer(IPublicClientApplication app, MsalA2ATokenCachePlugin cachePlugin)
         {
@@ -310,14 +332,31 @@ public sealed class MsalA2ATokenProvider : IA2ATokenProvider
             _cachePlugin = cachePlugin;
         }
 
+        // Per round-2 reviewer feedback (R2): the prior implementation
+        // checked _cacheRegistered without synchronization, allowing
+        // concurrent token requests to invoke RegisterAsync more than
+        // once. SemaphoreSlim with double-check ensures exactly-once
+        // registration even under heavy concurrent load.
         private async Task EnsureCacheRegisteredAsync(CancellationToken cancellationToken)
         {
             if (_cacheRegistered)
             {
                 return;
             }
-            await _cachePlugin.RegisterAsync(_app, cancellationToken).ConfigureAwait(false);
-            _cacheRegistered = true;
+            await _registrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_cacheRegistered)
+                {
+                    return;
+                }
+                await _cachePlugin.RegisterAsync(_app, cancellationToken).ConfigureAwait(false);
+                _cacheRegistered = true;
+            }
+            finally
+            {
+                _registrationGate.Release();
+            }
         }
 
         public async Task<IAccount?> GetCachedAccountAsync(CancellationToken cancellationToken)
@@ -347,6 +386,11 @@ public sealed class MsalA2ATokenProvider : IA2ATokenProvider
             return await _app.AcquireTokenWithDeviceCode(scopes, deviceCodeCallback)
                 .ExecuteAsync(cancellationToken)
                 .ConfigureAwait(false);
+        }
+
+        public void Dispose()
+        {
+            _registrationGate.Dispose();
         }
     }
 }

@@ -121,6 +121,53 @@ public class MsalA2ATokenProviderTests
         Assert.True(stub.LastSilentForce);
     }
 
+    [Fact]
+    public async Task GetToken_TrueParallelNonForceCalls_ShareSingleAcquisition()
+    {
+        // Per round-2 reviewer feedback (Opus B1 + GPT-5.5 #2): the
+        // simpler sequential dedupe test above passes even when the
+        // publication-to-_inFlight is non-atomic, because the first
+        // call's synchronous prelude wins under sequential
+        // single-thread invocation. To truly verify the lock-based
+        // claim, launch many parallel callers via Task.Run with a
+        // Barrier so they all hit GetTokenAsync at essentially the
+        // same instant. Under the buggy old code, SilentCalls would
+        // be > 1; under the TCS-under-lock fix, it stays at exactly 1.
+        var config = CreateConfig(allowDeviceCode: true);
+        var releaseGate = new TaskCompletionSource();
+        var stub = new StubAcquirer
+        {
+            Account = new StubAccount(),
+            SilentResultFactory = async ct =>
+            {
+                await releaseGate.Task.ConfigureAwait(false);
+                return MakeAuthResult("shared-parallel-token", DateTimeOffset.UtcNow.AddHours(1));
+            },
+        };
+        var provider = new MsalA2ATokenProvider(config, stub);
+
+        const int parallelCount = 32;
+        var barrier = new Barrier(parallelCount);
+        var tasks = new Task<string>[parallelCount];
+        for (int i = 0; i < parallelCount; i++)
+        {
+            tasks[i] = Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                return provider.GetTokenAsync(forceRefresh: false, CancellationToken.None);
+            });
+        }
+
+        // Give the threads a moment to all reach SignalAndWait and
+        // queue up at the lock before we release the silent flow.
+        await Task.Delay(50);
+        releaseGate.SetResult();
+
+        string[] results = await Task.WhenAll(tasks);
+        Assert.All(results, r => Assert.Equal("shared-parallel-token", r));
+        Assert.Equal(1, stub.SilentCalls);
+    }
+
     // ── Concurrent de-dupe ───────────────────────────────────────────
 
     [Fact]
