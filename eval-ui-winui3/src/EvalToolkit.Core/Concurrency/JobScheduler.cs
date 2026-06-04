@@ -50,6 +50,20 @@ public sealed record JobSchedulerOptions
 /// <c>string?</c> conversationId between row callbacks but does not
 /// inspect it. The caller decides whether to propagate or reset based
 /// on the row's chain flag, exactly as TS does.
+///
+/// <para><b>Two-part concurrency contract</b> (per Opus-4.8 round-4):
+/// TS runs <b>both</b> caps simultaneously — the worker pool
+/// (<c>concurrency</c>) AND a global <see cref="ThrottleGate"/>
+/// (capped at <see cref="ThrottleGate.HardCap"/>) wrapping every
+/// client call inside the row callback. The scheduler enforces only
+/// the worker-pool cap. The engine glue (evalscore-engine-port) is
+/// responsible for instantiating a <see cref="ThrottleGate"/> from
+/// <c>EVALSCORE_MAX_CONCURRENCY</c> and wrapping every LLM/WorkIQ
+/// invocation inside <c>processRow</c> with
+/// <see cref="ThrottleGate.RunAsync{T}(Func{Task{T}}, CancellationToken)"/>.
+/// Forgetting this drops the global cap silently — a row callback that
+/// only does local work will run at <c>concurrency</c>, but as soon as
+/// it makes a gated call it is correctly throttled.</para>
 /// </summary>
 public sealed class JobScheduler<TRow>
 {

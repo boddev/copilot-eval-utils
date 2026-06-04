@@ -3,14 +3,18 @@ namespace EvalToolkit.Core.Concurrency;
 /// <summary>
 /// Async concurrency gate. Mirrors the TS <c>ThrottleGate</c> in
 /// <c>eval-score/node/src/throttle-gate.ts</c>: at most
-/// <see cref="MaxConcurrent"/> operations may run concurrently; FIFO
-/// queue for callers that arrive once the gate is full.
+/// <see cref="MaxConcurrent"/> operations may run concurrently.
 ///
 /// Implementation note: backed by <see cref="SemaphoreSlim"/>, which
-/// already provides async FIFO ordering and cancellation. Wrapping it
-/// in a typed gate (rather than asking every caller to remember the
-/// release pattern) keeps the call sites symmetric with the TS code
-/// and prevents leaks when the inner operation throws.
+/// is cancellation-aware and typically (but not formally) processes
+/// waiters in arrival order. The TS impl has a strict FIFO queue;
+/// callers that depend on strict FIFO across waiters should not rely on
+/// this primitive. Per GPT-5.5 round-4 review: softened from an earlier
+/// stronger FIFO claim because <see cref="SemaphoreSlim"/> does not
+/// document FIFO ordering. Wrapping the semaphore in a typed gate
+/// (rather than asking every caller to remember the release pattern)
+/// keeps the call sites symmetric with the TS code and prevents leaks
+/// when the inner operation throws.
 /// </summary>
 public sealed class ThrottleGate : IDisposable
 {

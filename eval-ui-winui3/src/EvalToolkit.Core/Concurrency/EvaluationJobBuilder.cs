@@ -80,12 +80,13 @@ public static class EvaluationJobBuilder
                 }
             }
 
-            // Sort by turnIndex (TS uses `?? 0`, but we filtered to has-value
-            // above so the coalesce is moot). Stable sort isn't required —
-            // ties on turnIndex within the same thread are ill-defined and
-            // TS leaves them in member order, which List<T>.Sort with the
-            // OrderBy linq below also preserves only by accident. Use
-            // OrderBy for explicit stability.
+            // Sort by turnIndex ascending. `.OrderBy(int)` on
+            // <c>IEnumerable&lt;T&gt;</c> is documented-stable in .NET,
+            // and `members` was populated in ascending original-index
+            // order by the `for (int j = i; ...)` loop above, so ties
+            // on turnIndex within a thread preserve insertion order —
+            // matching the TS contract (TS `Array.prototype.sort` is
+            // also stable on Node 12+).
             int[] orderedIndices = members
                 .OrderBy(m => m.Turn)
                 .Select(m => m.Index)
@@ -109,16 +110,26 @@ public static class EvaluationJobBuilder
     /// <summary>
     /// Resolve the thread key the same way TS does:
     /// <c>row.threadId ?? row.id ?? String(row.itemIndex ?? rowIndex)</c>.
+    ///
+    /// Per GPT-5.5 round-4 review: the precedence test must be
+    /// <c>is not null</c>, NOT <c>!IsNullOrEmpty</c>. The TS <c>??</c>
+    /// operator treats the empty string as a valid value (only
+    /// <c>null</c>/<c>undefined</c> fall through), so a row with
+    /// <c>threadId: ""</c> is its own thread separate from a row with
+    /// <c>threadId: null</c>. An earlier draft used IsNullOrEmpty which
+    /// silently merged empty-string and null threads into the
+    /// itemIndex/rowIndex fallback and would have caused multi-turn
+    /// EvalScore rows to chain incorrectly.
     /// </summary>
     private static string ResolveThreadKey(RowKey k, int rowIndex)
     {
-        if (!string.IsNullOrEmpty(k.ThreadId))
+        if (k.ThreadId is not null)
         {
-            return k.ThreadId!;
+            return k.ThreadId;
         }
-        if (!string.IsNullOrEmpty(k.ItemId))
+        if (k.ItemId is not null)
         {
-            return k.ItemId!;
+            return k.ItemId;
         }
         int fallback = k.ItemIndex ?? rowIndex;
         return fallback.ToString(System.Globalization.CultureInfo.InvariantCulture);

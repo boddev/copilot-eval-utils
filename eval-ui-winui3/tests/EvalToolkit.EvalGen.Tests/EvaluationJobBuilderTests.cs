@@ -120,4 +120,51 @@ public class EvaluationJobBuilderTests
         Assert.Equal("T", jobs[1].ThreadKey);
         Assert.Equal(new[] { 2 }, jobs[2].RowIndices);
     }
+
+    /// <summary>
+    /// Per GPT-5.5 round-4 review: TS <c>??</c> treats empty string as
+    /// a valid threadId; rows with <c>threadId: ""</c> form their own
+    /// thread distinct from rows with <c>threadId: null</c>. Pin this
+    /// behavior so a regression from <c>is not null</c> back to
+    /// <c>!IsNullOrEmpty</c> breaks the build.
+    /// </summary>
+    [Fact]
+    public void Build_EmptyStringThreadId_IsTreatedAsValidKey()
+    {
+        var rows = new[]
+        {
+            new FakeRow(TurnIndex: 0, ThreadId: ""),  // 0: thread ""
+            new FakeRow(TurnIndex: 0, ThreadId: "B"), // 1: thread "B"
+            new FakeRow(TurnIndex: 1, ThreadId: ""),  // 2: thread "" (joins 0)
+            new FakeRow(TurnIndex: 1, ThreadId: "B"), // 3: thread "B" (joins 1)
+        };
+        var jobs = Build(rows);
+        Assert.Equal(2, jobs.Count);
+
+        // Thread "" appears first (its first member is index 0).
+        Assert.Equal("", jobs[0].ThreadKey);
+        Assert.Equal(new[] { 0, 2 }, jobs[0].RowIndices);
+
+        Assert.Equal("B", jobs[1].ThreadKey);
+        Assert.Equal(new[] { 1, 3 }, jobs[1].RowIndices);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="Build_EmptyStringThreadId_IsTreatedAsValidKey"/>:
+    /// when ThreadId is null but ItemId is empty string, the empty
+    /// ItemId is still the thread key (not the itemIndex fallback).
+    /// </summary>
+    [Fact]
+    public void Build_EmptyStringItemId_IsTreatedAsValidKey()
+    {
+        var rows = new[]
+        {
+            new FakeRow(TurnIndex: 0, ItemId: ""),
+            new FakeRow(TurnIndex: 1, ItemId: ""),
+        };
+        var jobs = Build(rows);
+        Assert.Single(jobs);
+        Assert.Equal("", jobs[0].ThreadKey);
+        Assert.Equal(new[] { 0, 1 }, jobs[0].RowIndices);
+    }
 }
