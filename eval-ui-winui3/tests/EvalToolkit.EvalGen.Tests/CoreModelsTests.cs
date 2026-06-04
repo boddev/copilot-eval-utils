@@ -144,4 +144,69 @@ public class CoreModelsTests
         string json = "{\"value\":\"x\"}";
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Assertion>(json));
     }
+
+    // ── StableIds parity with TS impl ────────────────────────────────────
+
+    [Theory]
+    [InlineData("What is the total revenue?", "invoices.csv:row=12", "6129e7c36138")]
+    [InlineData("Q with | pipe in prompt", "src.md", "3094acedbb34")]
+    [InlineData("", "", "cbe5cfdf7c21")]
+    public void StableIds_ItemId_MatchesTsSha256Hex12(string prompt, string sourceLocation, string expected)
+    {
+        // Reference values produced by Node:
+        //   crypto.createHash('sha256').update(`${prompt}|${sourceLocation}`).digest('hex').slice(0, 12)
+        // Locked in here so we'd catch any regression that switches
+        // algorithm, encoding, or slice length.
+        Assert.Equal(expected, StableIds.ItemId(prompt, sourceLocation));
+    }
+
+    [Fact]
+    public void StableIds_GroupHash_PrefersExistingItemIdOverPromptSourceJoin()
+    {
+        // TS impl: `item.id || `${prompt}|${source_location}`` — when
+        // .id is non-empty, the JOIN piece is the id; otherwise the
+        // prompt|source fallback. Then join all pieces with `|`.
+        List<GeneratedEvalItem> group = new()
+        {
+            NewItem(id: "", prompt: "What is the total revenue?", source: "invoices.csv:row=12"),
+            NewItem(id: "", prompt: "Other prompt", source: "src.csv"),
+            NewItem(id: "abc123def456", prompt: "Ignored because Id is set", source: "ignored.csv"),
+        };
+
+        // Reference: sha256("What is the total revenue?|invoices.csv:row=12|Other prompt|src.csv|abc123def456").digest('hex').slice(0,12)
+        Assert.Equal("324f3eef940e", StableIds.GroupHash(group));
+    }
+
+    private static GeneratedEvalItem NewItem(string id, string prompt, string source) => new()
+    {
+        Id = id,
+        Prompt = prompt,
+        ExpectedAnswer = string.Empty,
+        SourceLocation = source,
+        Assertions = Array.Empty<Assertion>(),
+        Category = QuestionCategory.SingleRecordLookup,
+        Difficulty = Difficulty.Easy,
+        SupportingFacts = Array.Empty<string>(),
+        GroundingConfidence = GroundingConfidence.High,
+    };
+
+    [Fact]
+    public void StableIds_ItemId_IsDeterministic()
+    {
+        string a = StableIds.ItemId("hello", "world.csv");
+        string b = StableIds.ItemId("hello", "world.csv");
+        Assert.Equal(a, b);
+        Assert.Equal(12, a.Length);
+    }
+
+    [Fact]
+    public void StableIds_ItemId_ChangesWithEitherInput()
+    {
+        string a = StableIds.ItemId("hello", "world.csv");
+        string b = StableIds.ItemId("hello!", "world.csv");
+        string c = StableIds.ItemId("hello", "world2.csv");
+        Assert.NotEqual(a, b);
+        Assert.NotEqual(a, c);
+        Assert.NotEqual(b, c);
+    }
 }

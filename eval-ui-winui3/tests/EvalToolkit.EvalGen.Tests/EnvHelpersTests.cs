@@ -74,16 +74,42 @@ public class EnvHelpersTests
     [InlineData("not-a-number")]
     [InlineData("")]
     [InlineData("   ")]
+    [InlineData("99999999999")]       // > Int32.MaxValue -> default per port contract.
+    [InlineData("-42")]               // Negative parsed value -> default.
     public void ParsePositiveIntEnv_UsesDefaultOnNonPositiveOrInvalid(string raw)
     {
-        // Matches TS parsePositiveIntEnv: zero / negative / NaN -> default.
-        // This is important for EVALSCORE_WORKIQ_MAX_ATTEMPTS: a user
-        // setting it to 0 should NOT silently disable retries.
+        // Matches TS parsePositiveIntEnv after the >= int.MaxValue clamp:
+        // zero / negative / NaN / overflow-int32 -> default.
         string name = $"_EVALTK_UT_INV_{Guid.NewGuid():N}";
         try
         {
             Environment.SetEnvironmentVariable(name, raw);
             Assert.Equal(42, EnvHelpers.ParsePositiveIntEnv(name, 42));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
+    }
+
+    [Theory]
+    [InlineData("30s", 30)]            // Leading digits, trailing junk: parseInt-style.
+    [InlineData("1e3", 1)]             // parseInt(_,10) stops at 'e'.
+    [InlineData("  42  ", 42)]         // Leading whitespace tolerated.
+    [InlineData("+42", 42)]            // Explicit positive sign.
+    [InlineData("042", 42)]            // Leading zero, base 10 (no octal).
+    [InlineData("7 ms", 7)]            // Stops at first non-digit.
+    public void ParsePositiveIntEnv_MatchesJsParseIntLeadingDigits(string raw, int expected)
+    {
+        // Real-world reason: a user writes EVALSCORE_WORKIQ_TIMEOUT_MS=30000ms
+        // expecting "30 seconds". On the TS side this becomes 30000. The
+        // C# side must agree, or "the same env produces different behavior"
+        // between the two implementations.
+        string name = $"_EVALTK_UT_JS_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(name, raw);
+            Assert.Equal(expected, EnvHelpers.ParsePositiveIntEnv(name, 99));
         }
         finally
         {
@@ -121,6 +147,46 @@ public class EnvHelpersTests
     }
 
     [Fact]
+    public void GetFirstEnv_TreatsWhitespaceOnlyValuesAsUnset()
+    {
+        // Matches TS getFirstEnv: process.env[name]?.trim() before the
+        // truthy check. A user setting EVALSCORE_A2A_CLIENT_ID="   "
+        // should fall through to the next alias, not pretend it's set.
+        string a = $"_EVALTK_UT_WS_A_{Guid.NewGuid():N}";
+        string b = $"_EVALTK_UT_WS_B_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(a, "   ");
+            Environment.SetEnvironmentVariable(b, "real-value");
+            Assert.Equal("real-value", EnvHelpers.GetFirstEnv(a, b));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(a, null);
+            Environment.SetEnvironmentVariable(b, null);
+        }
+    }
+
+    [Fact]
+    public void GetFirstEnv_TrimsReturnedValue()
+    {
+        // Matches TS getFirstEnv contract: returned value is trimmed,
+        // so e.g. EVALSCORE_A2A_TENANT_ID=" 1234 " doesn't carry leading
+        // / trailing whitespace into MSAL config (which would silently
+        // fail authentication).
+        string a = $"_EVALTK_UT_TR_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(a, "  contoso-tenant-id  ");
+            Assert.Equal("contoso-tenant-id", EnvHelpers.GetFirstEnv(a));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(a, null);
+        }
+    }
+
+    [Fact]
     public void EnvVars_HasAllExpectedConstants()
     {
         // Smoke check: make sure the catalog actually exposes the
@@ -131,6 +197,8 @@ public class EnvHelpersTests
         Assert.Equal("EVALSCORE_WORKIQ_BACKOFF_MS", EnvVars.EvalScoreWorkIqBackoffMs);
         Assert.Equal("EVALSCORE_WORKIQ_BACKOFF_MAX_MS", EnvVars.EvalScoreWorkIqBackoffMaxMs);
         Assert.Equal("EVALSCORE_MAX_CONCURRENCY", EnvVars.EvalScoreMaxConcurrency);
+        Assert.Equal("EVALGEN_LLM_MAX_ATTEMPTS", EnvVars.EvalGenLlmMaxAttempts);
+        Assert.Equal("EVALGEN_LLM_BACKOFF_MS", EnvVars.EvalGenLlmBackoffMs);
         Assert.Equal("EVALGEN_PPTX_INCLUDE_MASTER", EnvVars.EvalGenPptxIncludeMaster);
         Assert.Equal("WORK_IQ_A2A_ACCESS_TOKEN", EnvVars.WorkIqA2aAccessToken);
         Assert.Equal("WORK_IQ_A2A_TOKEN_COMMAND", EnvVars.WorkIqA2aTokenCommand);

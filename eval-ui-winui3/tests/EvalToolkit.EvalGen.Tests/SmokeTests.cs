@@ -18,11 +18,20 @@ public class SmokeTests
     }
 
     [Fact]
-    public void Core_Version_Tag_Distinguishes_From_Node_Tools()
+    public void Core_Wire_EvalGen_Version_Matches_Node_Tool()
     {
-        // Artifacts produced by the C# port must declare a different
-        // version string than the Node tool so a consumer can tell
-        // which implementation produced a file.
-        Assert.StartsWith("evaltoolkit-", CoreInfo.ArtifactVersionTag);
+        // The on-wire `evalgen_version` field MUST match the Node tool
+        // ("1.0.0") byte-for-byte so eval files round-trip between the
+        // two implementations and the parity harness doesn't have to
+        // special-case-mask this field.
+        Assert.Equal("1.0.0", CoreInfo.WireEvalgenVersion);
+    }
+
+    [Fact]
+    public void Core_Generator_Tool_Distinguishes_From_Node_Tools()
+    {
+        // Provenance for the C# port lives in the additive
+        // `metadata.generator_tool` field, which carries this string.
+        Assert.StartsWith("evaltoolkit-csharp/", CoreInfo.GeneratorTool);
     }
 }

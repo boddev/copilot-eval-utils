@@ -54,7 +54,26 @@ public sealed record EvalSetMetadata
 {
     public required string Model { get; init; }
     public string? SourceHash { get; init; }
+
+    /// <summary>
+    /// On-wire <c>evalgen_version</c> string. Both implementations
+    /// write the same literal (currently <c>"1.0.0"</c>, see
+    /// <see cref="CoreInfo.WireEvalgenVersion"/>) so eval files
+    /// round-trip byte-for-byte. Provenance for the actual emitting
+    /// tool lives in <see cref="GeneratorTool"/>.
+    /// </summary>
     public required string EvalgenVersion { get; init; }
+
+    /// <summary>
+    /// Additive C#-port-only provenance. Carries
+    /// <see cref="CoreInfo.GeneratorTool"/> (e.g.
+    /// <c>"evaltoolkit-csharp/0.1.0-alpha"</c>) so a consumer that
+    /// cares which implementation produced the file can tell. Not
+    /// written by the Node tool; consumers must tolerate it being
+    /// absent.
+    /// </summary>
+    public string? GeneratorTool { get; init; }
+
     public IReadOnlyList<string>? AvoidanceEvalsets { get; init; }
     public int? AvoidanceItemsCompared { get; init; }
     public int? CrossRunDuplicatesRemoved { get; init; }

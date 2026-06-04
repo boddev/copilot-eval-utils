@@ -12,17 +12,31 @@ public static class CoreInfo
     public const string ProductName = "EvalToolkit";
 
     /// <summary>
-    /// Semantic version. Bumped per release. The Node tools track their own
-    /// version in <c>eval-gen/package.json</c>; this string is what the
-    /// C# port writes into emitted artifacts so a consumer can tell which
-    /// implementation produced a file.
+    /// Semantic version of this implementation. Bumped per release.
+    /// Used in provenance fields (e.g. <see cref="GeneratorTool"/>),
+    /// NOT in the <c>evalgen_version</c> wire field of emitted eval
+    /// sets — see <see cref="WireEvalgenVersion"/> for the byte-exact
+    /// reason why.
     /// </summary>
     public const string Version = "0.1.0-alpha";
 
     /// <summary>
-    /// String written into <c>EvalSet.metadata.evalgen_version</c> for
-    /// artifacts produced by this implementation. Prefixed so it's
-    /// distinguishable from the Node tool's plain semver string.
+    /// What this implementation writes into
+    /// <c>EvalSet.metadata.generator_tool</c> for provenance. Lets a
+    /// consumer that DOES care which implementation produced a file
+    /// see this clearly, without changing the wire schema.
     /// </summary>
-    public const string ArtifactVersionTag = "evaltoolkit-" + Version;
+    public const string GeneratorTool = "evaltoolkit-csharp/" + Version;
+
+    /// <summary>
+    /// The literal string written to
+    /// <c>EvalSet.metadata.evalgen_version</c>. **Pinned to the Node
+    /// tool's value (<c>"1.0.0"</c>)** so eval files round-trip
+    /// byte-for-byte between the two implementations and the parity
+    /// harness doesn't have to special-case-ignore this one field.
+    /// Verified against <c>eval-gen/src/writers.ts:60,100</c>.
+    /// Provenance for the C# implementation lives in
+    /// <see cref="GeneratorTool"/> instead (an additive field).
+    /// </summary>
+    public const string WireEvalgenVersion = "1.0.0";
 }

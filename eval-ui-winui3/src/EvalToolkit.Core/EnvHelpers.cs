@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace EvalToolkit.Core;
 
 /// <summary>
@@ -56,31 +54,111 @@ public static class EnvHelpers
 
     /// <summary>
     /// Parse a positive integer env var, returning the default if the
-    /// variable is unset, blank, non-numeric, or &lt;= 0. Mirrors the TS
-    /// <c>parsePositiveIntEnv</c> contract exactly so that e.g.
-    /// <c>EVALSCORE_WORKIQ_MAX_ATTEMPTS=0</c> falls back to the default
-    /// rather than disabling retries.
+    /// variable is unset, blank, or doesn't have a usable leading
+    /// integer; or if the parsed value is &lt;= 0.
+    ///
+    /// **Mirrors JavaScript <c>Number.parseInt(raw, 10)</c> semantics**
+    /// (NOT <c>int.TryParse</c>'s stricter contract). That means:
+    /// <list type="bullet">
+    ///   <item><c>"30s"</c> → 30 (leading digits consumed, trailing junk ignored).</item>
+    ///   <item><c>"1e3"</c> → 1 (parseInt stops at <c>e</c> in base-10 mode; this is NOT scientific notation).</item>
+    ///   <item><c>"99999999999"</c> → 99999999999 if it fits a <see cref="long"/>; otherwise the default. (TS preserves this in JS Number; our caller usually wants milliseconds and doesn't need values past <see cref="int.MaxValue"/>.)</item>
+    ///   <item><c>""</c> / <c>null</c> / no leading digit → default.</item>
+    ///   <item>Zero or negative → default (matches TS clamp <c>parsed > 0</c>).</item>
+    /// </list>
+    /// Real-world reason this matters: a user setting
+    /// <c>EVALSCORE_WORKIQ_TIMEOUT_MS=30000ms</c> (typo with unit
+    /// suffix) gets 30000 ms on both sides, not silently default to
+    /// 300000 on one and 30000 on the other.
     /// </summary>
     public static int ParsePositiveIntEnv(string name, int defaultValue)
     {
         string? raw = Environment.GetEnvironmentVariable(name);
-        if (string.IsNullOrWhiteSpace(raw))
+        // TS: `if (!raw) return defaultValue;` — empty string is falsy.
+        // Whitespace-only is truthy as a string but `parseInt(' ', 10)`
+        // returns NaN, which then falls through. We collapse both paths
+        // through ParseLeadingIntJsLike.
+        if (raw is null || raw.Length == 0)
         {
             return defaultValue;
         }
-        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+        long? parsed = ParseLeadingIntJsLike(raw);
+        if (!parsed.HasValue || parsed.Value <= 0 || parsed.Value > int.MaxValue)
         {
             return defaultValue;
         }
-        return parsed > 0 ? parsed : defaultValue;
+        return (int)parsed.Value;
+    }
+
+    /// <summary>
+    /// Match <c>Number.parseInt(value, 10)</c>'s leading-digit
+    /// behavior: skip leading whitespace, accept an optional <c>+</c>
+    /// or <c>-</c> sign, then consume the longest run of decimal
+    /// digits. Returns null if no digit follows; returns the parsed
+    /// value (in a <see cref="long"/> to survive Int32 overflow) on
+    /// success.
+    /// </summary>
+    internal static long? ParseLeadingIntJsLike(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        int i = 0;
+        // Skip whitespace (JS parseInt strips standard WhiteSpace + LineTerminator).
+        while (i < value.Length && char.IsWhiteSpace(value[i]))
+        {
+            i++;
+        }
+        if (i >= value.Length)
+        {
+            return null;
+        }
+
+        bool negative = false;
+        if (value[i] == '+' || value[i] == '-')
+        {
+            negative = value[i] == '-';
+            i++;
+        }
+
+        int digitStart = i;
+        while (i < value.Length && value[i] >= '0' && value[i] <= '9')
+        {
+            i++;
+        }
+        int digitCount = i - digitStart;
+        if (digitCount == 0)
+        {
+            return null;
+        }
+
+        // Manual accumulate so we can detect overflow into the return
+        // (rather than relying on Convert which throws / wraps).
+        long accum = 0;
+        for (int j = digitStart; j < i; j++)
+        {
+            long next = (accum * 10) + (value[j] - '0');
+            // Overflow check: long overflow into negative or wrap.
+            if (next < accum)
+            {
+                return null;
+            }
+            accum = next;
+        }
+        return negative ? -accum : accum;
     }
 
     /// <summary>
     /// Returns the first non-empty environment variable value among
-    /// <paramref name="names"/>, or null if none are set. Mirrors the TS
-    /// <c>getFirstEnv(...names)</c> helper in
-    /// <c>eval-score/node/src/workiq-client.ts</c>, which lets us honor
-    /// <c>EVALSCORE_*</c> + <c>WORK_IQ_*</c> aliases with a single call.
+    /// <paramref name="names"/>, trimmed of leading/trailing whitespace,
+    /// or null if none are set. Mirrors the TS <c>getFirstEnv(...names)</c>
+    /// helper in <c>eval-score/node/src/workiq-client.ts</c> which does
+    /// <c>process.env[name]?.trim()</c> before the truthy check — so an
+    /// env var set to whitespace ("   ") is treated as unset, and a
+    /// returned value never carries trailing whitespace into downstream
+    /// auth/config that would silently break.
     /// </summary>
     public static string? GetFirstEnv(params string[] names)
     {
@@ -88,10 +166,11 @@ public static class EnvHelpers
         foreach (string name in names)
         {
             string? raw = Environment.GetEnvironmentVariable(name);
-            if (!string.IsNullOrWhiteSpace(raw))
+            if (string.IsNullOrWhiteSpace(raw))
             {
-                return raw;
+                continue;
             }
+            return raw.Trim();
         }
         return null;
     }

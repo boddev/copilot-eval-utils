@@ -30,6 +30,12 @@ public static class EnvVars
     /// <summary>Override the LLM HTTP timeout in milliseconds. Default ~ 120000.</summary>
     public const string EvalGenLlmTimeoutMs = "EVALGEN_LLM_TIMEOUT_MS";
 
+    /// <summary>Max retry attempts for the LLM client. Default 3. See <c>eval-gen/src/llm-client.ts</c>.</summary>
+    public const string EvalGenLlmMaxAttempts = "EVALGEN_LLM_MAX_ATTEMPTS";
+
+    /// <summary>Base backoff for the LLM retry pipeline, milliseconds. Default 2000.</summary>
+    public const string EvalGenLlmBackoffMs = "EVALGEN_LLM_BACKOFF_MS";
+
     /// <summary>Override the LLM provider (one of the wire strings in <see cref="LLMProviders.ToWireString"/>).</summary>
     public const string EvalGenProvider = "EVALGEN_PROVIDER";
 
@@ -195,4 +201,11 @@ public static class EnvVars
     /// Section 10).
     /// </summary>
     public const string EvalToolkitWorkspaceDir = "EVALTOOLKIT_WORKSPACE_DIR";
+
+    /// <summary>
+    /// Electron Eval UI's workspace dir. The WinUI app does NOT write
+    /// here; it only READS this so the first-run "import jobs" wizard
+    /// can probe the existing Electron-tool job folders (plan §10).
+    /// </summary>
+    public const string EvalUiWorkspaceDir = "EVAL_UI_WORKSPACE_DIR";
 }

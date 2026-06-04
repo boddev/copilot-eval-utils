@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc",
     "start": "ts-node src/index.ts",
+    "parity-read": "ts-node src/parity-entrypoint.ts read",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"

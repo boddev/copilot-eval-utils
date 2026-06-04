@@ -16,6 +16,7 @@ on:
       - 'eval-gen/tests/fixtures/**'
       - 'eval-gen/package.json'
       - 'eval-gen/package-lock.json'
+      - 'eval-gen/tsconfig.json'
       - '.github/workflows/build-evaltoolkit-winui3.yml'
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - 'eval-gen/tests/fixtures/**'
       - 'eval-gen/package.json'
       - 'eval-gen/package-lock.json'
+      - 'eval-gen/tsconfig.json'
       - '.github/workflows/build-evaltoolkit-winui3.yml'
 
 # Build/test/upload only. Release publishing / signing are added with
@@ -48,7 +50,11 @@ jobs:
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          # Pinned to 10.0.300 (matches global.json) instead of 10.0.x —
+          # GPT-5.5 phase-A core-models review noted that a feature-band
+          # drift on hosted runners combined with TreatWarningsAsErrors
+          # would silently break CI.
+          dotnet-version: 10.0.300
 
       - name: Set up Node.js (parity harness shells out to TS impl)
         uses: actions/setup-node@v4
@@ -61,6 +67,10 @@ jobs:
       - name: Restore eval-gen (TS reference impl for parity tests)
         working-directory: eval-gen
         run: npm ci
+
+      - name: Build eval-gen (parity entrypoint must be in dist/)
+        working-directory: eval-gen
+        run: npm run build
 
       - name: dotnet restore
         run: dotnet restore
