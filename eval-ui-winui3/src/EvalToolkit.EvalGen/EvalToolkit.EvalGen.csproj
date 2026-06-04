@@ -16,6 +16,8 @@
     <PackageReference Include="CsvHelper" />
     <!-- Reader-port slice 2: ClosedXML for SheetJS-faithful XLSX. -->
     <PackageReference Include="ClosedXML" />
+    <!-- Reader-port slice 3: DocumentFormat.OpenXml for mammoth-parity DOCX. -->
+    <PackageReference Include="DocumentFormat.OpenXml" />
   </ItemGroup>
 
   <ItemGroup>

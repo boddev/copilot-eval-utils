@@ -139,11 +139,12 @@ public class DatasetReaderTests : IDisposable
     }
 
     [Fact]
-    public void ReadDatasetFile_Slice3PlusFormat_ThrowsClearMessage()
+    public void ReadDatasetFile_Slice4PlusFormat_ThrowsClearMessage()
     {
-        // Slice 2 ported .xlsx; .docx/.pdf/.pptx remain deferred to
-        // slice 3. Update this test when those slices land.
-        string path = Write("data.docx", "");
+        // Slice 2 ported .xlsx, slice 3 ported .docx; .pdf/.pptx
+        // remain deferred (slice 4/5). Update this test when those
+        // slices land.
+        string path = Write("data.pdf", "%PDF-stub");
         var ex = Assert.Throws<NotSupportedException>(() => DatasetReader.ReadDatasetFile(path));
         Assert.Contains("not yet ported", ex.Message, StringComparison.Ordinal);
     }

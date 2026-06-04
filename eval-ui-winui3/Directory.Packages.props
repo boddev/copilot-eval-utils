@@ -72,5 +72,17 @@
       Each port todo adds the matching <PackageVersion /> entry here in
       the same PR as the <PackageReference /> in its csproj.
     -->
+    <!--
+      Reader-port slice 3 — DOCX via DocumentFormat.OpenXml. Mirrors
+      the TS readDocx in eval-gen which uses mammoth.extractRawText.
+      mammoth walks the OpenXml document body extracting <w:t> and
+      <w:tab/> contents, joining paragraphs with two newlines and
+      silently dropping <w:br/>. Pinned at the same version
+      ClosedXML 0.105 already brings in transitively so there's no
+      version drift between the two readers.
+    -->
+    <PackageVersion Include="DocumentFormat.OpenXml" Version="3.1.1" />
+
+
   </ItemGroup>
 </Project>
