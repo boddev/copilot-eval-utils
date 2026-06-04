@@ -28,7 +28,12 @@ namespace EvalToolkit.EvalGen.Writers;
 internal static class PathRewrite
 {
     private static readonly Regex s_rewriteRegex = new(
-        @"\.(csv|xlsx|json)$",
+        // Use `\z` (true end-of-string) instead of `$` so .NET regex
+        // semantics exactly match JS regex `$` in non-multiline mode.
+        // The .NET `$` ALSO matches the position before a trailing `\n`,
+        // which would silently diverge for the (admittedly contrived)
+        // case of a path like "out.json\n". Opus-4.8 review S1.
+        @"\.(csv|xlsx|json)\z",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>

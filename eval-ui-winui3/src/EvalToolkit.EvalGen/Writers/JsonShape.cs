@@ -146,6 +146,12 @@ internal static class JsonShape
                 }
 
                 // Control or lone surrogate: keep escape, lowercase hex.
+                // NOTE: The lone-surrogate branch is effectively dead
+                // code under normal use — STJ's encoder substitutes
+                // U+FFFD for unpaired surrogates BEFORE the bytes
+                // reach this normalizer, so the JSON stream never
+                // actually contains a lone `\uD8XX` or `\uDCXX` escape.
+                // Kept for defensive completeness; Opus-4.8 review N1.
                 output.Add((byte)'\\');
                 output.Add((byte)'u');
                 output.Add(ToLowerHex(input[i + 2]));
