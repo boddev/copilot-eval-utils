@@ -218,6 +218,30 @@ public sealed class DocxReader : IDatasetReader
             {
                 continue;
             }
+            if (el.Ancestors<MoveFromRun>().Any() ||
+                el.Ancestors<MoveToRun>().Any())
+            {
+                // mammoth has NO handler for <w:moveFrom>/<w:moveTo>
+                // (verified by inspecting mammoth's xmlElementReaders
+                // map in node_modules/mammoth/lib/docx/body-reader.js),
+                // so it falls through to the "unrecognised element was
+                // ignored" warning path and emits nothing. The C# walk
+                // would otherwise pick up the inner <w:t> normally —
+                // explicit filter required for parity.
+                //
+                // Notes on the asymmetric tracked-changes contract:
+                //  * <w:ins> → readChildElements: transparent wrapper,
+                //    inner <w:t> flows through normally (NO filter
+                //    needed; verified `Read_TrackedInsert_Kept`).
+                //  * <w:del> → explicit handler returning empty:
+                //    its content is <w:delText> (a distinct class,
+                //    DeletedText, NOT Text), which my switch already
+                //    drops (verified `Read_TrackedDelete_Dropped`).
+                //  * <w:moveFrom>/<w:moveTo> → unhandled, contents
+                //    typically <w:t>, must be explicitly filtered
+                //    here.
+                continue;
+            }
             switch (el)
             {
                 case Text t:
@@ -279,5 +303,6 @@ public sealed class DocxReader : IDatasetReader
     internal const string ReadDocxKnownDivergences =
         "br=dropped (including type=page); fldSimple display=dropped (fldChar complex=kept); " +
         "AlternateContent Choice=dropped (Fallback=used); " +
+        "w:ins=transparent (kept); w:del=dropped; w:moveFrom/w:moveTo=dropped; " +
         "headers/footers=ignored; comments/footnotes/endnotes=ignored";
 }

@@ -690,4 +690,117 @@ public class DocxReaderTests : IDisposable
         Assert.Equal("leading", rDefault.Records[0]["content"]);
         Assert.Equal("leading", rPreserve.Records[0]["content"]);
     }
+
+    // ===== Tracked-changes coverage (post-round-2, GPT-5.5 residual)
+    // Verified empirically against mammoth@1.12.0 in
+    // `docx-probe/probe-tracked.js`, and cross-checked against
+    // mammoth's source (`node_modules/mammoth/lib/docx/body-reader.js`
+    // xmlElementReaders map). Mammoth's contract:
+    //   "w:ins"       → readChildElements  (transparent wrapper, KEPT)
+    //   "w:del"       → true               (explicit empty-result handler, DROPPED)
+    //   "w:moveFrom"  → (no handler)       → "unrecognised element" warning → DROPPED
+    //   "w:moveTo"    → (no handler)       → "unrecognised element" warning → DROPPED
+    // The asymmetry (ins kept, del/moveFrom/moveTo dropped) is the
+    // canonical "what you'd render in a plain text export" view of
+    // an accepted document: insertions become normal text, deletions
+    // vanish, and moves are deduplicated by dropping both ends
+    // (matches what Word's "Save As Plain Text" produces for an
+    // un-accepted tracked-changes document).
+
+    [Fact]
+    public void Read_TrackedInsert_Kept()
+    {
+        // mammoth probe `ins-inline`:  "before inserted after\n\n"
+        // No explicit C# filter needed — <w:ins> wraps a normal
+        // <w:r><w:t>, and our walker's typed Text case picks it up
+        // transparently (mirrors mammoth's readChildElements).
+        string path = BuildDocx("ins-inline.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:ins w:id=\"1\" w:author=\"A\" w:date=\"2024-01-01T00:00:00Z\">" +
+                    "<w:r><w:t>inserted</w:t></w:r>" +
+                  "</w:ins>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before inserted after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_TrackedDelete_Dropped()
+    {
+        // mammoth probe `del-inline`:  "before  after\n\n"
+        //   (note TWO spaces — the deleted run vanished, but the
+        //   surrounding whitespace runs are still there)
+        // No explicit C# filter needed — <w:del>'s content is
+        // <w:delText> which maps to OpenXml's DeletedText class, not
+        // Text. Our switch only matches `case Text t`, so DeletedText
+        // is silently dropped — matches mammoth's empty-result
+        // handler exactly.
+        string path = BuildDocx("del-inline.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:del w:id=\"2\" w:author=\"A\" w:date=\"2024-01-01T00:00:00Z\">" +
+                    "<w:r><w:delText>deleted</w:delText></w:r>" +
+                  "</w:del>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before  after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_TrackedMoveFrom_Dropped()
+    {
+        // mammoth probe `moveFrom-inline`:  "before  after\n\n"
+        //   (TWO spaces — the moved-from text dropped)
+        // <w:moveFrom> contains <w:r><w:t>, so our walker would
+        // naturally include the text — requires explicit ancestor
+        // filter to match mammoth's unrecognized-element behavior.
+        string path = BuildDocx("moveFrom-inline.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:moveFrom w:id=\"3\" w:author=\"A\" w:date=\"2024-01-01T00:00:00Z\">" +
+                    "<w:r><w:t>moved</w:t></w:r>" +
+                  "</w:moveFrom>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before  after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_TrackedMoveTo_Dropped()
+    {
+        // mammoth probe `moveTo-inline`:  "before  after\n\n"
+        //   (TWO spaces — moveTo content also dropped, despite being
+        //   the destination of the move. Reason: mammoth has no
+        //   handler for w:moveTo either, so both ends of a move are
+        //   dedup-dropped. Matches Word's "Save As Plain Text" output
+        //   when tracked changes are NOT accepted.)
+        // <w:moveTo> contains <w:r><w:t>, requires explicit ancestor
+        // filter to match.
+        string path = BuildDocx("moveTo-inline.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:moveTo w:id=\"4\" w:author=\"A\" w:date=\"2024-01-01T00:00:00Z\">" +
+                    "<w:r><w:t>arrived</w:t></w:r>" +
+                  "</w:moveTo>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before  after", r.Records[0]["content"]);
+    }
 }
