@@ -14,7 +14,7 @@ public class SmokeTests
     [Fact]
     public void All_Engine_Assembly_Markers_Are_Present()
     {
-        Assert.Equal("EvalToolkit.Core", CoreInfo.Name);
+        Assert.Equal("EvalToolkit", CoreInfo.ProductName);
         Assert.Equal("EvalToolkit.EvalGen", EvalGenInfo.Name);
         Assert.Equal("EvalToolkit.EvalScore", EvalScoreInfo.Name);
     }

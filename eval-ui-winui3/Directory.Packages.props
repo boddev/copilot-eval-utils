@@ -1,0 +1,53 @@
+<Project>
+  <!--
+    Central Package Management (CPM) for EvalToolkit.
+
+    Reviewer (Opus-4.8, phase A scaffold round) recommended turning this
+    on before the engine ports add a fleet of NuGet packages (Polly v8,
+    System.CommandLine, MSAL, ClosedXML, PdfPig, DocumentFormat.OpenXml,
+    etc.) since version drift across the 5 src + 3 test projects gets
+    very hard to chase otherwise. With CPM enabled, individual csprojs
+    say <PackageReference Include="X" /> with no version, and the
+    version is resolved from <PackageVersion Include="X" Version="..."/>
+    entries here.
+
+    Test packages and analyzers live in this file alongside engine
+    packages, so smoke tests and ports never disagree on xunit /
+    Microsoft.NET.Test.Sdk / etc. versions.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Don't surface CPM-related transitive complaints during the port. -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Test harness -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+
+    <!--
+      Engine packages get added here as their ports land:
+
+        Polly                            v8 — workiq retry pipeline
+        System.CommandLine               beta — eval-gen-native / eval-score-native shims
+        CsvHelper                        SheetJS-compat readers
+        ClosedXML                        XLSX reader/writer
+        UglyToad.PdfPig                  PDF reader (semantic parity)
+        DocumentFormat.OpenXml           DOCX / PPTX readers (normalized-text parity)
+        System.IO.Hashing                xxhash for stable IDs across runs
+        Microsoft.Identity.Client        MSAL core
+        Microsoft.Identity.Client.Broker WAM/interactive broker for the WinUI head
+        Microsoft.Identity.Client.Extensions.Msal  DPAPI-protected cache
+        Markdig                          report rendering in the UI
+        H.NotifyIcon.WinUI               system tray (Phase B)
+        Microsoft.WindowsAppSDK          WinUI 3 head (Phase B)
+        CommunityToolkit.Mvvm            MVVM helpers (Phase B)
+
+      Each port todo adds the matching <PackageVersion /> entry here in
+      the same PR as the <PackageReference /> in its csproj.
+    -->
+  </ItemGroup>
+</Project>

@@ -1,0 +1,8 @@
+{
+  "//": "Pins the .NET SDK feature band used by EvalToolkit so analyzer / compiler updates don't silently break a TreatWarningsAsErrors build. allowPrerelease=false keeps CI on GA bits even when newer previews are installed locally. rollForward=feature means we accept patch + feature-band upgrades (e.g. 10.0.300 -> 10.0.4xx) but not major upgrades to .NET 11.",
+  "sdk": {
+    "version": "10.0.300",
+    "rollForward": "feature",
+    "allowPrerelease": false
+  }
+}

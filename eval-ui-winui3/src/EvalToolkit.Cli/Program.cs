@@ -15,7 +15,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
-        Console.Error.WriteLine($"{CoreInfo.Name} v{CoreInfo.Version} — CLI shim not yet implemented.");
+        Console.Error.WriteLine($"{CoreInfo.ProductName} v{CoreInfo.Version} — CLI shim not yet implemented.");
         Console.Error.WriteLine("Phase A todo `cli-shims` adds System.CommandLine dispatch for");
         Console.Error.WriteLine("`eval-gen-native` and `eval-score-native`.");
         if (args.Length > 0)

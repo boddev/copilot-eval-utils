@@ -5,15 +5,32 @@ on:
     branches:
       - main
     paths:
+      # The C# port itself.
       - 'eval-ui-winui3/**'
+      # TS reference impl that the parity harness diffs against. A change
+      # to a reader/writer/scorer in eval-gen/ must re-run the parity
+      # gate, otherwise C#-vs-TS divergence introduced from the TS side
+      # would go uncaught. Same applies to eval-score/ once that port
+      # starts (todo `parity-harness` will add `eval-score/node/**`).
+      - 'eval-gen/src/**'
+      - 'eval-gen/tests/fixtures/**'
+      - 'eval-gen/package.json'
+      - 'eval-gen/package-lock.json'
       - '.github/workflows/build-evaltoolkit-winui3.yml'
   pull_request:
     paths:
       - 'eval-ui-winui3/**'
+      - 'eval-gen/src/**'
+      - 'eval-gen/tests/fixtures/**'
+      - 'eval-gen/package.json'
+      - 'eval-gen/package-lock.json'
       - '.github/workflows/build-evaltoolkit-winui3.yml'
 
+# Build/test/upload only. Release publishing / signing are added with
+# the phase-C `signing` and `ci-workflow` todos; until then this
+# workflow does not need contents:write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
