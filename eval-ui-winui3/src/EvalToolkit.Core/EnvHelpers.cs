@@ -17,7 +17,8 @@ namespace EvalToolkit.Core;
 ///     if unset/blank/non-numeric/&lt;=0.</item>
 ///   <item><see cref="GetFirstEnv"/> matches <c>getFirstEnv</c> in
 ///     <c>eval-score/node/src/workiq-client.ts</c>: returns the first
-///     non-empty environment value among the supplied names, or null.</item>
+///     non-empty trimmed environment value among the supplied names,
+///     or <see cref="string.Empty"/> when none are set.</item>
 /// </list>
 /// </summary>
 public static class EnvHelpers
@@ -55,16 +56,18 @@ public static class EnvHelpers
     /// <summary>
     /// Parse a positive integer env var, returning the default if the
     /// variable is unset, blank, or doesn't have a usable leading
-    /// integer; or if the parsed value is &lt;= 0.
+    /// integer; or if the parsed value is &lt;= 0 or exceeds
+    /// <see cref="int.MaxValue"/>.
     ///
     /// **Mirrors JavaScript <c>Number.parseInt(raw, 10)</c> semantics**
-    /// (NOT <c>int.TryParse</c>'s stricter contract). That means:
+    /// (NOT <c>int.TryParse</c>'s stricter contract) up to the final
+    /// Int32 clamp. That means:
     /// <list type="bullet">
     ///   <item><c>"30s"</c> → 30 (leading digits consumed, trailing junk ignored).</item>
     ///   <item><c>"1e3"</c> → 1 (parseInt stops at <c>e</c> in base-10 mode; this is NOT scientific notation).</item>
-    ///   <item><c>"99999999999"</c> → 99999999999 if it fits a <see cref="long"/>; otherwise the default. (TS preserves this in JS Number; our caller usually wants milliseconds and doesn't need values past <see cref="int.MaxValue"/>.)</item>
     ///   <item><c>""</c> / <c>null</c> / no leading digit → default.</item>
     ///   <item>Zero or negative → default (matches TS clamp <c>parsed > 0</c>).</item>
+    ///   <item><b>Intentional divergence:</b> <c>"99999999999"</c> → default in C# because we clamp at <see cref="int.MaxValue"/>; TS preserves the full JS Number value. Justified because every consumer of this helper today is an <c>int</c>-typed timeout / attempt count where any value past Int32 is operationally pathological. The parity harness explicitly excludes overflow inputs.</item>
     /// </list>
     /// Real-world reason this matters: a user setting
     /// <c>EVALSCORE_WORKIQ_TIMEOUT_MS=30000ms</c> (typo with unit
@@ -153,14 +156,20 @@ public static class EnvHelpers
     /// <summary>
     /// Returns the first non-empty environment variable value among
     /// <paramref name="names"/>, trimmed of leading/trailing whitespace,
-    /// or null if none are set. Mirrors the TS <c>getFirstEnv(...names)</c>
-    /// helper in <c>eval-score/node/src/workiq-client.ts</c> which does
-    /// <c>process.env[name]?.trim()</c> before the truthy check — so an
-    /// env var set to whitespace ("   ") is treated as unset, and a
-    /// returned value never carries trailing whitespace into downstream
-    /// auth/config that would silently break.
+    /// or <see cref="string.Empty"/> (NOT null) if none are set.
+    ///
+    /// Mirrors the TS <c>getFirstEnv(...names)</c> helper in
+    /// <c>eval-score/node/src/workiq-client.ts</c> which does
+    /// <c>process.env[name]?.trim()</c> before the truthy check, then
+    /// returns <c>''</c> when nothing matches. Returning the empty
+    /// string (not <c>null</c>) keeps the wire shape parity-identical:
+    /// any caller using <c>?? fallback</c> would diverge between the
+    /// two implementations because TS's empty string skips ??-chain
+    /// fallback while C#'s null does not. Per Opus-4.8 round-2 review:
+    /// pin this contract before <c>workiq-clients-port</c> because A2A
+    /// config code paths chain heavily off these helpers.
     /// </summary>
-    public static string? GetFirstEnv(params string[] names)
+    public static string GetFirstEnv(params string[] names)
     {
         ArgumentNullException.ThrowIfNull(names);
         foreach (string name in names)
@@ -172,6 +181,6 @@ public static class EnvHelpers
             }
             return raw.Trim();
         }
-        return null;
+        return string.Empty;
     }
 }

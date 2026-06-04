@@ -74,16 +74,39 @@ public class EnvHelpersTests
     [InlineData("not-a-number")]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("99999999999")]       // > Int32.MaxValue -> default per port contract.
     [InlineData("-42")]               // Negative parsed value -> default.
     public void ParsePositiveIntEnv_UsesDefaultOnNonPositiveOrInvalid(string raw)
     {
-        // Matches TS parsePositiveIntEnv after the >= int.MaxValue clamp:
-        // zero / negative / NaN / overflow-int32 -> default.
+        // Matches TS parsePositiveIntEnv: zero / negative / NaN -> default.
         string name = $"_EVALTK_UT_INV_{Guid.NewGuid():N}";
         try
         {
             Environment.SetEnvironmentVariable(name, raw);
+            Assert.Equal(42, EnvHelpers.ParsePositiveIntEnv(name, 42));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
+    }
+
+    [Fact]
+    public void ParsePositiveIntEnv_OverflowsInt32_FallsBackToDefault_IntentionalDivergence()
+    {
+        // **Intentional divergence from TS parsePositiveIntEnv.**
+        // JS Number is double-backed, so TS returns the full
+        // 99999999999. The C# port clamps to Int32 because every
+        // consumer of this helper today is an int-typed timeout /
+        // attempt count, where any value past Int32 is operationally
+        // pathological (>24 days of milliseconds). The parity harness
+        // EXCLUDES overflow inputs from its env-comparison vectors so
+        // this divergence is well-bounded. If a future consumer needs
+        // 64-bit support, add a sibling `ParsePositiveLongEnv` rather
+        // than widening this one.
+        string name = $"_EVALTK_UT_OVF_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(name, "99999999999");
             Assert.Equal(42, EnvHelpers.ParsePositiveIntEnv(name, 42));
         }
         finally
@@ -139,11 +162,14 @@ public class EnvHelpersTests
     }
 
     [Fact]
-    public void GetFirstEnv_ReturnsNullWhenAllUnset()
+    public void GetFirstEnv_ReturnsEmptyStringWhenAllUnset()
     {
+        // Matches TS getFirstEnv: returns '' when nothing is set, NOT
+        // null. Lets callers chain via `||` (TS) / `string.IsNullOrEmpty`
+        // (C#) without a runtime divergence between the two ports.
         string a = $"_EVALTK_UT_UA_{Guid.NewGuid():N}";
         string b = $"_EVALTK_UT_UB_{Guid.NewGuid():N}";
-        Assert.Null(EnvHelpers.GetFirstEnv(a, b));
+        Assert.Equal(string.Empty, EnvHelpers.GetFirstEnv(a, b));
     }
 
     [Fact]

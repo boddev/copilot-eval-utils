@@ -151,6 +151,12 @@ public class CoreModelsTests
     [InlineData("What is the total revenue?", "invoices.csv:row=12", "6129e7c36138")]
     [InlineData("Q with | pipe in prompt", "src.md", "3094acedbb34")]
     [InlineData("", "", "cbe5cfdf7c21")]
+    // UTF-8 byte parity vector — accented + emoji codepoint in BOTH
+    // prompt and source. Locks in `Encoding.UTF8.GetBytes` against any
+    // future drift to `Encoding.Unicode` / `ASCII`. Per Opus-4.8
+    // round-2 review: previous vectors were all pure ASCII so could
+    // not catch this regression.
+    [InlineData("café 🎉", "src/données.csv:row=7", "77f2cdf41d1d")]
     public void StableIds_ItemId_MatchesTsSha256Hex12(string prompt, string sourceLocation, string expected)
     {
         // Reference values produced by Node:
