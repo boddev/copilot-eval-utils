@@ -131,8 +131,23 @@ function readXlsx(filePath: string): Record<string, unknown>[] {
 }
 
 /**
- * Chunk a long text into ~CHUNK_TARGET_CHARS records, splitting on paragraph
- * boundaries to keep boundaries stable across runs.
+ * Canonical document text chunker shared by DOCX/PDF/TXT/MD readers.
+ *
+ * Contract for parity ports:
+ * - Input is an ordered sequence of paragraph/section strings prepared by the
+ *   reader; this function owns only the chunk assembly and metadata shape.
+ * - Each input piece is trimmed, and empty pieces are skipped.
+ * - Pieces are appended in order until adding the next piece would exceed
+ *   CHUNK_TARGET_CHARS and the current chunk is non-empty; then the current
+ *   chunk is flushed. A single piece longer than the target is emitted as one
+ *   oversized chunk rather than split mid-paragraph.
+ * - Pieces inside a chunk are joined with a single LF (`\n`); flushed content is
+ *   trimmed once more before emission.
+ * - Records are `{ chunk_number, content, word_count }`, with 1-based stable
+ *   chunk numbers and word_count computed by splitting trimmed content on
+ *   `/\s+/` and filtering empty tokens.
+ * - Source provenance such as `_source_file` is stamped by `readDatasetFile`,
+ *   not by this helper.
  */
 function chunkText(paragraphs: string[]): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = [];
@@ -602,35 +617,11 @@ function readTextFile(filePath: string): Record<string, unknown>[] {
     throw new Error(`Text file is empty: ${filePath}`);
   }
 
-  // Split by double newlines (paragraphs) or headings
-  const sections = content.split(/\n{2,}|(?=^#{1,3}\s)/m).filter(s => s.trim().length > 0);
+  const sections = content
+    .replace(/\r\n?/g, '\n')
+    .split(/\n{2,}|(?=^#{1,3}\s)/m);
 
-  // Chunk into ~500 char records
-  const records: Record<string, unknown>[] = [];
-  let chunk = '';
-  let chunkNum = 1;
-
-  for (const section of sections) {
-    if (chunk.length + section.length > 500 && chunk.length > 0) {
-      records.push({
-        chunk_number: chunkNum++,
-        content: chunk.trim(),
-        word_count: chunk.trim().split(/\s+/).length,
-      });
-      chunk = '';
-    }
-    chunk += section + '\n\n';
-  }
-
-  if (chunk.trim().length > 0) {
-    records.push({
-      chunk_number: chunkNum,
-      content: chunk.trim(),
-      word_count: chunk.trim().split(/\s+/).length,
-    });
-  }
-
-  return records;
+  return chunkText(sections);
 }
 
 /** Helper to require an optional dependency with a clear error message */
