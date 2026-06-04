@@ -140,7 +140,10 @@ public static class DatasetReader
     public static ReadResult ReadSingleFile(string absolutePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
-        string ext = Path.GetExtension(absolutePath).ToLowerInvariant();
+        // Use the Node `path.extname` rule (dotfiles with no other dot
+        // have no extension) rather than .NET `Path.GetExtension` to
+        // match TS dispatch behavior — see <see cref="NodeExtname"/>.
+        string ext = NodeExtname(absolutePath).ToLowerInvariant();
         IDatasetReader reader = ext switch
         {
             ".csv" or ".tsv" => new CsvReader(),
@@ -155,6 +158,40 @@ public static class DatasetReader
                 $"Unsupported file format: {ext}. Supported (slice 1): csv, tsv, json, jsonl, txt, md."),
         };
         return reader.Read(absolutePath);
+    }
+
+    /// <summary>
+    /// Node-compatible <c>path.extname</c>:
+    /// <list type="bullet">
+    ///   <item>"foo.csv" → ".csv"</item>
+    ///   <item>".csv" → "" (leading dot is the only dot → no extension)</item>
+    ///   <item>".foo.csv" → ".csv"</item>
+    ///   <item>"..csv" → ".csv" (last dot at position 1, not 0)</item>
+    ///   <item>"foo" → ""</item>
+    ///   <item>"foo." → "."</item>
+    ///   <item>"..." → "." (last dot at position 2)</item>
+    /// </list>
+    /// .NET <c>Path.GetExtension</c> deviates by returning <c>".csv"</c>
+    /// for the dotfile case. Replicating Node's rule prevents a file
+    /// literally named <c>.csv</c> from being silently included on C#
+    /// while TS skips it.
+    /// </summary>
+    internal static string NodeExtname(string filePath)
+    {
+        ArgumentNullException.ThrowIfNull(filePath);
+        string fileName = Path.GetFileName(filePath);
+        if (fileName.Length == 0)
+        {
+            return string.Empty;
+        }
+        int lastDot = fileName.LastIndexOf('.');
+        if (lastDot <= 0)
+        {
+            // No dot, or the only dot is at position 0 (leading-dot
+            // file name with no other dots). Both → "" in Node.
+            return string.Empty;
+        }
+        return fileName.Substring(lastDot);
     }
 
     /// <summary>
@@ -200,8 +237,11 @@ public static class DatasetReader
     {
         foreach (string filePath in Directory.EnumerateFiles(dirPath))
         {
-            string fileName = Path.GetFileName(filePath);
-            string extWithDot = Path.GetExtension(fileName).ToLowerInvariant();
+            // Use Node `path.extname` rule so dotfiles like ".csv"
+            // are correctly treated as having no extension (and thus
+            // skipped). Otherwise C# would discover them but TS would
+            // not, creating a parity hazard on hidden files.
+            string extWithDot = NodeExtname(filePath).ToLowerInvariant();
             if (!s_supportedExtensions.Contains(extWithDot))
             {
                 continue;

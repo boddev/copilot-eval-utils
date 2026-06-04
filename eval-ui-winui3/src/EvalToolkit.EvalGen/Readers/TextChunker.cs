@@ -27,7 +27,21 @@ internal static class TextChunker
 {
     public const int ChunkTargetChars = 500;
 
-    private static readonly Regex s_whitespaceRun = new(@"\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    /// <summary>
+    /// Whitespace class equivalent to JavaScript <c>\s</c> at the level
+    /// that matters for word counting:
+    /// <c>[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]</c>.
+    ///
+    /// <para>Empirical divergence from .NET <c>Regex \s</c> (verified
+    /// round 5): U+FEFF (BOM) is whitespace in JS but a <b>word
+    /// character</b> in .NET (so JS counts 2 tokens / .NET counts 1
+    /// without this class), and U+0085 (NEL) is the opposite (whitespace
+    /// in .NET, word character in JS, so JS counts 1 token / .NET counts
+    /// 2). Pinning the class explicitly removes both divergences.</para>
+    /// </summary>
+    private static readonly Regex s_whitespaceRun = new(
+        @"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static List<DatasetRow> Chunk(IEnumerable<string> paragraphs)
     {
@@ -78,9 +92,11 @@ internal static class TextChunker
     /// <summary>
     /// Word count compatible with TS
     /// <c>trimmed.split(/\s+/).filter(w =&gt; w.length &gt; 0).length</c>.
-    /// JS <c>\s</c> matches Unicode whitespace (NBSP, BOM, FF, VT,
-    /// line/paragraph separators, etc.). .NET <see cref="Regex"/> with
-    /// default options uses the same Unicode whitespace class.
+    /// Uses an explicit JS-equivalent whitespace class
+    /// (<see cref="s_whitespaceRun"/>) rather than .NET <c>Regex \s</c>
+    /// because the two diverge on U+FEFF and U+0085 — see the doc
+    /// comment on <see cref="s_whitespaceRun"/> for the exact codepoints
+    /// and reviewer-verified counts.
     /// </summary>
     private static int CountWords(string trimmed)
     {

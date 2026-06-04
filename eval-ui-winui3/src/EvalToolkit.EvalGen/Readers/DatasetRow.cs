@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace EvalToolkit.EvalGen.Readers;
 
 /// <summary>
@@ -30,7 +32,13 @@ namespace EvalToolkit.EvalGen.Readers;
 /// observable. <see cref="DatasetRow"/> is therefore implemented as a
 /// thin wrapper over an order-preserving collection (a list of pairs)
 /// instead of a plain <see cref="Dictionary{TKey,TValue}"/>.
+///
+/// <para>The class is tagged with <see cref="DatasetRowJsonConverter"/>
+/// so System.Text.Json serializes it as a flat object (<c>{k:v}</c>)
+/// rather than emitting the surface members <c>Count</c> /
+/// <c>Entries</c> — this is the shape the parity harness compares.</para>
 /// </summary>
+[JsonConverter(typeof(DatasetRowJsonConverter))]
 public sealed class DatasetRow
 {
     private readonly List<KeyValuePair<string, object?>> _entries;

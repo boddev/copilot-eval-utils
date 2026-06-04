@@ -9,6 +9,12 @@ namespace EvalToolkit.EvalGen.Readers;
 /// of objects (preferred) or a single JSON object (wrapped as a
 /// one-element list). Anything else throws to match the TS error
 /// message verbatim.
+///
+/// <para><b>BOM handling:</b> a UTF-8 BOM is NOT stripped — TS
+/// <c>JSON.parse</c> throws on BOM-prefixed input and so does
+/// <see cref="JsonDocument.Parse(string)"/>. This is verified by both
+/// the round-5 reviewer probes and by a unit test
+/// (<c>JsonReader_BOM_Throws_MatchingTS</c>).</para>
 /// </summary>
 public sealed class JsonReader : IDatasetReader
 {
@@ -16,11 +22,15 @@ public sealed class JsonReader : IDatasetReader
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
 
-        string content = File.ReadAllText(absolutePath, System.Text.Encoding.UTF8);
-        if (content.Length > 0 && content[0] == '\uFEFF')
-        {
-            content = content.Substring(1);
-        }
+        // Read raw bytes and decode as UTF-8 without BOM auto-detection
+        // (see CsvReader for the same pattern + rationale): TS
+        // JSON.parse throws on a BOM-prefixed input, and so does
+        // JsonDocument.Parse on the same byte sequence. Using
+        // File.ReadAllText(path, encoding) would silently strip the
+        // BOM and accept the file, diverging from TS.
+        byte[] bytes = File.ReadAllBytes(absolutePath);
+        string content = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+            .GetString(bytes);
 
         using JsonDocument doc = JsonDocument.Parse(content);
         var records = new List<DatasetRow>();

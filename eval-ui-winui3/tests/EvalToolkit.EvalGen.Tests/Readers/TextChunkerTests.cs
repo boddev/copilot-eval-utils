@@ -54,4 +54,26 @@ public class TextChunkerTests
     {
         Assert.Empty(TextChunker.Chunk(Array.Empty<string>()));
     }
+
+    [Fact]
+    public void Chunk_WordCount_BomCountsAsWhitespace_MatchingJs()
+    {
+        // Verified divergence (round 5): U+FEFF (BOM) is whitespace in
+        // JS regex \s but a word character in .NET's default \s. The
+        // explicit JS-equivalent class fixes this so "a\uFEFFb" → 2 words
+        // (matching JS) rather than 1 (the .NET default).
+        var rows = TextChunker.Chunk(new[] { "a\uFEFFb" });
+        Assert.Equal(2, rows[0]["word_count"]);
+    }
+
+    [Fact]
+    public void Chunk_WordCount_NelCountsAsWordChar_MatchingJs()
+    {
+        // Mirror of the BOM case: U+0085 (NEL) is whitespace in .NET's
+        // default \s but a word character in JS \s. The explicit class
+        // excludes NEL so "a\u0085b" → 1 word (matching JS, where the
+        // two letters glue together) rather than 2 (the .NET default).
+        var rows = TextChunker.Chunk(new[] { "a\u0085b" });
+        Assert.Equal(1, rows[0]["word_count"]);
+    }
 }

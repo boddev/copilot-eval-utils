@@ -36,13 +36,16 @@ public sealed class TextFileReader : IDatasetReader
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
 
-        string content = File.ReadAllText(absolutePath, System.Text.Encoding.UTF8);
-        // Strip BOM if present so the first heading regex anchor matches
-        // (otherwise <c>^#</c> would see the BOM before the hash).
-        if (content.Length > 0 && content[0] == '\uFEFF')
-        {
-            content = content.Substring(1);
-        }
+        // No BOM stripping — TS doesn't strip either. (Output is
+        // identical because <c>chunkText</c> .Trim()'s every section,
+        // and the heading <c>^#</c> anchor only matters at column 0 of
+        // a line where there is by definition no preceding content. We
+        // leave the BOM in to keep the parity contract crystal-clear:
+        // the C# reader operates on the exact byte stream TS would see.
+        byte[] bytes = File.ReadAllBytes(absolutePath);
+        string content = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+            .GetString(bytes);
+
         if (content.Trim().Length == 0)
         {
             throw new InvalidDataException($"Text file is empty: {absolutePath}");

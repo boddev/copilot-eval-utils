@@ -6,39 +6,43 @@ using EvalToolkit.Core;
 namespace EvalToolkit.EvalGen.Readers;
 
 /// <summary>
-/// Reads CSV / TSV files in a way that matches the TS
-/// <c>csv-parse/sync</c> reader in <c>eval-gen/src/readers/index.ts</c>
-/// with options <c>{ columns: true, skip_empty_lines: true, trim: true }</c>.
+/// Reads CSV / TSV files matching the TS <c>csv-parse/sync</c> reader
+/// in <c>eval-gen/src/readers/index.ts</c> with options
+/// <c>{ columns: true, skip_empty_lines: true, trim: true }</c>.
 ///
-/// Parity contract pinned by the parity test suite:
+/// Parity contract pinned by the parity test suite — these rules were
+/// verified empirically against <c>csv-parse/sync</c> in node (see
+/// reviewer round-5 ground-truth probes):
 /// <list type="bullet">
 ///   <item>Delimiter is <c>\t</c> when the file extension is
-///     <c>.tsv</c>; otherwise <c>,</c> (matches TS
-///     <c>filePath.endsWith('.tsv') ? '\t' : ','</c>).</item>
-///   <item>The first non-empty row is the header.</item>
-///   <item>Empty lines are skipped (do NOT produce a blank record).</item>
+///     <c>.tsv</c>; otherwise <c>,</c>.</item>
+///   <item>The first non-empty row is the header. Headers are trimmed
+///     (TrimOptions.Trim applies to every field, including headers).</item>
+///   <item>Empty lines are skipped (no blank record emitted).</item>
 ///   <item>Every cell value is trimmed and stored as a
-///     <see cref="string"/>. <c>csv-parse</c> does NOT auto-coerce
-///     numbers, so cells like <c>"42"</c> stay <c>"42"</c> rather than
-///     becoming <c>42</c>. The C#-side reader is intentionally strict
-///     about this — see <c>NumericStringEqualsNumber</c> in the parity
-///     harness for the opt-in cross-runtime comparison flag.</item>
-///   <item>RFC4180 quoted fields with embedded delimiters / newlines /
-///     escaped double-quotes are handled by CsvHelper's default mode.</item>
-///   <item>A UTF-8 BOM at the start of the file is stripped before
-///     parsing (csv-parse handles this implicitly via Node's
-///     <c>fs.readFileSync(path, 'utf-8')</c> behavior; on .NET we
-///     normalize explicitly to avoid the BOM polluting the first
-///     header name).</item>
-///   <item>Duplicate header names get a <c>_N</c> suffix matching
-///     <c>csv-parse</c>'s default <c>columns: true</c> behavior
-///     (second occurrence becomes <c>name_1</c>, third
-///     <c>name_2</c>, etc.). Tests pin this.</item>
+///     <see cref="string"/> (no numeric coercion — see
+///     <c>NumericStringEqualsNumber</c> in the parity harness for the
+///     opt-in cross-runtime comparison flag).</item>
+///   <item>RFC4180 quoted fields (embedded delimiters / newlines /
+///     escaped double-quotes) handled via CsvHelper's default mode.</item>
+///   <item><b>BOM is NOT stripped</b>: a leading <c>\uFEFF</c> stays
+///     attached to the first header name. Verified against csv-parse —
+///     <c>parse('\uFEFFid,name\n…')</c> yields keys
+///     <c>["\uFEFFid", "name"]</c>. Excel's "CSV UTF-8" export writes a
+///     BOM, so this divergence used to break parity on every Excel CSV
+///     in the real eval-prompt fixtures.</item>
+///   <item><b>Duplicate headers collapse, last-value-wins</b>: a
+///     header row of <c>a,b,a</c> with data <c>1,2,3</c> produces
+///     <c>{a:"3", b:"2"}</c> — two keys, in first-occurrence position,
+///     and the value of the surviving key is taken from the
+///     rightmost-most column with that name. This matches csv-parse's
+///     default <c>columns:true</c> behavior. The earlier suffixing
+///     <c>foo_1</c>/<c>foo_2</c> scheme was a parity bug.</item>
+///   <item><b>Empty header names are preserved</b>: a header row of
+///     <c>a,,b</c> with data <c>1,2,3</c> produces
+///     <c>{a:"1", "":"2", b:"3"}</c> — the empty string is a valid
+///     key. csv-parse retains it; the reader does too.</item>
 /// </list>
-///
-/// Note: cell types staying string-typed is the same behavior chosen
-/// by TS; XLSX (slice 2) differs and keeps numeric typing because
-/// SheetJS does the coercion.
 /// </summary>
 public sealed class CsvReader : IDatasetReader
 {
@@ -49,20 +53,22 @@ public sealed class CsvReader : IDatasetReader
         bool isTsv = absolutePath.EndsWith(".tsv", StringComparison.OrdinalIgnoreCase);
         char delimiterChar = isTsv ? '\t' : ',';
 
-        // Read raw text up front so we can normalize BOM the same way
-        // Node's fs.readFileSync('utf-8') does. The .NET StreamReader
-        // does detect the BOM, but doing it once explicitly keeps the
-        // parser layer dumb.
-        string content = File.ReadAllText(absolutePath, System.Text.Encoding.UTF8);
-        if (content.Length > 0 && content[0] == '\uFEFF')
-        {
-            content = content.Substring(1);
-        }
+        // Read raw bytes and decode as UTF-8 without BOM auto-detection.
+        // The File.ReadAllText(path, encoding) helper internally uses
+        // StreamReader which strips the BOM during detection, regardless
+        // of the encoding's encoderShouldEmitUTF8Identifier setting.
+        // We need the BOM to remain in the first header so we go bytes →
+        // chars manually.
+        byte[] bytes = File.ReadAllBytes(absolutePath);
+        string content = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+            .GetString(bytes);
 
         var config = new CsvConfiguration(CultureInfo.InvariantCulture)
         {
             Delimiter = delimiterChar.ToString(CultureInfo.InvariantCulture),
-            HasHeaderRecord = true,
+            HasHeaderRecord = false, // We parse headers manually so we can
+                                      // replicate csv-parse's collapse-on-dup
+                                      // behavior.
             TrimOptions = TrimOptions.Trim,
             IgnoreBlankLines = true,
             MissingFieldFound = null,
@@ -71,36 +77,32 @@ public sealed class CsvReader : IDatasetReader
 
         var records = new List<DatasetRow>();
         using var reader = new StringReader(content);
-        using var csv = new CsvHelper.CsvReader(reader, config);
+        using var parser = new CsvParser(reader, config);
 
-        if (!csv.Read())
+        if (!parser.Read())
         {
             return new ReadResult { Records = records, Format = InputFormat.Csv };
         }
-        csv.ReadHeader();
-        string[]? originalHeaders = csv.HeaderRecord;
-        if (originalHeaders is null)
-        {
-            return new ReadResult { Records = records, Format = InputFormat.Csv };
-        }
+        string[] headers = parser.Record ?? Array.Empty<string>();
 
-        // Apply csv-parse duplicate-header suffixing (<name>_N) so two
-        // columns named "foo" become ["foo", "foo_1"]. TS produces this
-        // shape under the hood and downstream consumers may depend on
-        // it; pinning the behavior keeps reader-port byte-exact.
-        string[] dedupedHeaders = DedupeHeaders(originalHeaders);
-
-        while (csv.Read())
+        while (parser.Read())
         {
-            var row = new DatasetRow(capacity: dedupedHeaders.Length);
-            for (int i = 0; i < dedupedHeaders.Length; i++)
+            string[] row = parser.Record ?? Array.Empty<string>();
+            var record = new DatasetRow(capacity: headers.Length);
+
+            // Last-value-wins: iterate left-to-right and call Set, which
+            // overwrites in place when the key is already present. This
+            // means duplicate header keys collapse to a single slot at
+            // the FIRST occurrence position with the value of the
+            // RIGHTMOST column carrying that name — exactly what
+            // csv-parse(columns:true) produces.
+            for (int i = 0; i < headers.Length; i++)
             {
-                string rawValue = csv.GetField(i) ?? string.Empty;
-                // TrimOptions.Trim already strips leading/trailing
-                // whitespace inside quoted fields per RFC4180 + csv-parse.
-                row.Set(dedupedHeaders[i], rawValue);
+                string key = headers[i] ?? string.Empty;
+                string value = i < row.Length ? (row[i] ?? string.Empty) : string.Empty;
+                record.Set(key, value);
             }
-            records.Add(row);
+            records.Add(record);
         }
 
         return new ReadResult
@@ -108,33 +110,5 @@ public sealed class CsvReader : IDatasetReader
             Records = records,
             Format = InputFormat.Csv,
         };
-    }
-
-    /// <summary>
-    /// Apply csv-parse default suffixing for duplicate header names:
-    /// the first occurrence keeps its name; the Nth occurrence (N &gt;= 2)
-    /// becomes <c>{name}_{N - 1}</c>. So <c>["foo", "foo", "foo"]</c>
-    /// becomes <c>["foo", "foo_1", "foo_2"]</c>.
-    /// </summary>
-    private static string[] DedupeHeaders(string[] headers)
-    {
-        var seen = new Dictionary<string, int>(StringComparer.Ordinal);
-        var result = new string[headers.Length];
-        for (int i = 0; i < headers.Length; i++)
-        {
-            string name = headers[i] ?? string.Empty;
-            if (!seen.TryGetValue(name, out int count))
-            {
-                seen[name] = 1;
-                result[i] = name;
-            }
-            else
-            {
-                string deduped = $"{name}_{count}";
-                seen[name] = count + 1;
-                result[i] = deduped;
-            }
-        }
-        return result;
     }
 }

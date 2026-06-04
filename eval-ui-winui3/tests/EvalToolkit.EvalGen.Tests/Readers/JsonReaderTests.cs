@@ -89,12 +89,15 @@ public class JsonReaderTests : IDisposable
     }
 
     [Fact]
-    public void Read_BomStripped()
+    public void Read_BomPrefixed_Throws_MatchingTS()
     {
+        // Verified ground truth (round 5):
+        //   JSON.parse('\uFEFF{"a":1}') → SyntaxError
+        // System.Text.Json's JsonDocument.Parse also throws on a
+        // BOM-prefixed input. By reading raw bytes (no auto-BOM
+        // detection) we keep the C# reader byte-faithful to TS.
         string path = Write("bom.json", "[{\"id\":1}]", bom: true);
-        var result = new JsonReader().Read(path);
-        Assert.Single(result.Records);
-        Assert.Equal(1L, result.Records[0]["id"]);
+        Assert.ThrowsAny<System.Text.Json.JsonException>(() => new JsonReader().Read(path));
     }
 
     [Fact]

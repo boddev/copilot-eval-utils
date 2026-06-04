@@ -81,11 +81,20 @@ public class CsvReaderTests : IDisposable
     }
 
     [Fact]
-    public void Read_StripsUtf8Bom()
+    public void Read_BomIsRetainedOnFirstHeader_MatchingCsvParse()
     {
+        // Verified ground truth (round 5):
+        //   parse('\uFEFFid,name\n1,foo', {columns:true, trim:true,
+        //         skip_empty_lines:true})
+        //   → [{ "\uFEFFid": "1", "name": "foo" }]
+        // csv-parse does NOT strip the BOM; the first header keeps it
+        // attached. The previous reader scrubbed it, which broke parity
+        // for every Excel "CSV UTF-8" file.
         string path = WriteCsvWithBom("bom.csv", "id,name\n1,first\n");
         var result = new CsvReader().Read(path);
-        Assert.Equal("id", result.Records[0].Entries[0].Key);
+        Assert.Equal("\uFEFFid", result.Records[0].Entries[0].Key);
+        Assert.Equal("name", result.Records[0].Entries[1].Key);
+        Assert.Equal("1", result.Records[0]["\uFEFFid"]);
     }
 
     [Fact]
@@ -106,15 +115,48 @@ public class CsvReaderTests : IDisposable
     }
 
     [Fact]
-    public void Read_DuplicateHeadersGetUnderscoreSuffix()
+    public void Read_DuplicateHeaders_CollapseAndLastValueWins()
     {
+        // Verified ground truth (round 5):
+        //   parse('foo,foo,foo\na,b,c', {columns:true,...}) → [{"foo":"c"}]
+        // csv-parse collapses duplicate header names into a single key
+        // at the first occurrence's position; the surviving value is
+        // the rightmost column's value.
         string path = WriteCsv("dup.csv", "foo,foo,foo\na,b,c\n");
         var result = new CsvReader().Read(path);
-        Assert.Equal(new[] { "foo", "foo_1", "foo_2" },
+        Assert.Single(result.Records[0].Entries);
+        Assert.Equal("foo", result.Records[0].Entries[0].Key);
+        Assert.Equal("c", result.Records[0]["foo"]);
+    }
+
+    [Fact]
+    public void Read_DuplicateHeaders_AbA_KeepsBothInFirstPositions()
+    {
+        // Verified ground truth: a,b,a / 1,2,3 → {a:"3", b:"2"} (two
+        // keys, "a" at its FIRST position with the value of the THIRD
+        // column).
+        string path = WriteCsv("dup2.csv", "a,b,a\n1,2,3\n");
+        var result = new CsvReader().Read(path);
+        Assert.Equal(2, result.Records[0].Entries.Count);
+        Assert.Equal(new[] { "a", "b" },
                      result.Records[0].Entries.Select(e => e.Key).ToArray());
-        Assert.Equal("a", result.Records[0]["foo"]);
-        Assert.Equal("b", result.Records[0]["foo_1"]);
-        Assert.Equal("c", result.Records[0]["foo_2"]);
+        Assert.Equal("3", result.Records[0]["a"]);
+        Assert.Equal("2", result.Records[0]["b"]);
+    }
+
+    [Fact]
+    public void Read_EmptyHeaderName_IsPreservedAsEmptyStringKey()
+    {
+        // Verified ground truth: a,,b / 1,2,3 → {a:"1", "":"2", b:"3"}.
+        // csv-parse keeps the empty string as a valid header name.
+        string path = WriteCsv("emphdr.csv", "a,,b\n1,2,3\n");
+        var result = new CsvReader().Read(path);
+        Assert.Equal(3, result.Records[0].Entries.Count);
+        Assert.Equal(new[] { "a", "", "b" },
+                     result.Records[0].Entries.Select(e => e.Key).ToArray());
+        Assert.Equal("1", result.Records[0]["a"]);
+        Assert.Equal("2", result.Records[0][""]);
+        Assert.Equal("3", result.Records[0]["b"]);
     }
 
     [Fact]
