@@ -78,6 +78,24 @@ namespace EvalToolkit.EvalGen.Readers;
 /// up reader-port slice adds a BIFF8 dependency (NPOI is the usual
 /// choice), <c>.xls</c> is rejected upstream by
 /// <see cref="DatasetReader"/>.</para>
+///
+/// <para><b>Known residual: all-empty-string rows/columns.</b>
+/// ClosedXML's <c>RangeUsed()</c> (and every
+/// <c>XLCellsUsedOptions</c> variant — verified empirically) excludes
+/// cells whose only content is the empty string when there are no
+/// adjacent non-empty cells in the same row/column. As a result, a
+/// pathological sheet whose row 1 contains ONLY empty-string cells
+/// would have its row-1 dropped from the bounding box, and row 2
+/// would be misinterpreted as the header — diverging from SheetJS
+/// which would treat row 1 as a header of <c>["", "_1", ...]</c>.
+/// Mixed rows (any row containing at least one non-empty-string cell)
+/// behave correctly; the limitation only fires when an ENTIRE row or
+/// column is composed exclusively of empty strings, which is
+/// vanishingly rare in real eval datasets. Documented here rather
+/// than worked around because the workaround (reading the worksheet
+/// dimension from the raw XML, since ClosedXML does not surface it
+/// via the public API) would significantly complicate the reader for
+/// negligible real-world benefit.</para>
 /// </summary>
 public sealed class XlsxReader : IDatasetReader
 {
@@ -137,11 +155,27 @@ public sealed class XlsxReader : IDatasetReader
         int firstCol = used.FirstColumn().ColumnNumber();
         int lastCol = used.LastColumn().ColumnNumber();
 
+        // Pre-compute the GLOBAL max column across header + all data
+        // rows. SheetJS computes its key namespace once per sheet
+        // (covering header row width + the maximum data-row overshoot),
+        // and then any row that overshoots uses the same precomputed
+        // synthetic keys. We mirror that by walking the data rows once
+        // up-front to find the global right edge.
+        int globalLastCol = lastCol;
+        for (int rowIdx = firstRow + 1; rowIdx <= lastRow; rowIdx++)
+        {
+            globalLastCol = Math.Max(globalLastCol, GetRowLastUsedColumn(sheet, rowIdx, lastCol));
+        }
+
         // Header row is the first row of the used range. SheetJS treats
         // row 1 as the header regardless of where data starts; ClosedXML
         // gives us the first NON-EMPTY row via RangeUsed, which matches
         // SheetJS's effective behavior for the tabular dispatch path.
-        string[] headers = BuildHeaders(sheet, firstRow, firstCol, lastCol);
+        // The returned array spans firstCol..globalLastCol; positions
+        // past the header row's lastCol default to the synthetic
+        // __EMPTY key (subject to the unified collision-resolution
+        // process below).
+        string[] headers = BuildHeaders(sheet, firstRow, firstCol, lastCol, globalLastCol);
 
         // Header-only sheet (no data rows below) → no records, matching
         // SheetJS probe (header-only XLSX → []).
@@ -153,15 +187,8 @@ public sealed class XlsxReader : IDatasetReader
         for (int rowIdx = firstRow + 1; rowIdx <= lastRow; rowIdx++)
         {
             var row = new DatasetRow(capacity: headers.Length);
-            int dataEnd = ExtendRangeForRow(sheet, rowIdx, firstCol, lastCol);
 
-            // Walk every column in [firstCol .. max(lastCol, dataEnd)].
-            // Cells beyond the header range fall into synthetic __EMPTY
-            // keys (ragged-long behavior).
-            int walkEnd = Math.Max(lastCol, dataEnd);
-            int syntheticIdx = ExtractSyntheticIndexStart(headers);
-
-            for (int col = firstCol; col <= walkEnd; col++)
+            for (int col = firstCol; col <= globalLastCol; col++)
             {
                 IXLCell cell = sheet.Cell(rowIdx, col);
                 if (IsMissing(cell))
@@ -169,23 +196,8 @@ public sealed class XlsxReader : IDatasetReader
                     continue;
                 }
 
-                string key;
                 int headerOffset = col - firstCol;
-                if (headerOffset < headers.Length)
-                {
-                    key = headers[headerOffset];
-                }
-                else
-                {
-                    // Ragged-long: synthesize __EMPTY[_N] for over-shoot
-                    // columns, picking up the suffix counter where the
-                    // header row left off.
-                    key = syntheticIdx == 0
-                        ? SyntheticEmptyKey
-                        : $"{SyntheticEmptyKey}_{syntheticIdx}";
-                    syntheticIdx++;
-                }
-
+                string key = headers[headerOffset];
                 row.Set(key, ConvertCellValue(cell));
             }
 
@@ -202,113 +214,93 @@ public sealed class XlsxReader : IDatasetReader
     }
 
     /// <summary>
-    /// Build the header-name array using the SheetJS row-1 rule:
-    /// <list type="bullet">
-    ///   <item>Cell present with non-empty string value → that value
-    ///     (trimmed/stringified by ClosedXML's GetFormattedString).</item>
-    ///   <item>Cell present with empty string → key <c>""</c>.</item>
-    ///   <item>Missing / blank / error cell → synthetic
-    ///     <c>__EMPTY</c> / <c>__EMPTY_1</c> / ... in order.</item>
-    ///   <item>Duplicate names → second and later occurrences get
-    ///     <c>_1</c>, <c>_2</c>, ... suffixes (first stays bare).</item>
+    /// Build the header-name array using SheetJS's row-1 rule, extended
+    /// to cover all column positions up to <paramref name="globalLastCol"/>
+    /// (header row width + maximum data-row overshoot). The resolution
+    /// algorithm is a single unified pass that handles every collision
+    /// uniformly:
+    /// <list type="number">
+    ///   <item>Build a "desired name" per column position:
+    ///     <list type="bullet">
+    ///       <item>Within the header row: <c>HeaderToString(cell)</c> if
+    ///         present, else <c>__EMPTY</c>.</item>
+    ///       <item>Past the header row: always <c>__EMPTY</c>
+    ///         (synthetic key for an overshoot position).</item>
+    ///     </list></item>
+    ///   <item>For each desired name in column order, if it is already in
+    ///     the used-set find the smallest <c>N ≥ 1</c> such that
+    ///     <c>name_N</c> is not in the used-set; assign that.</item>
     /// </list>
+    ///
+    /// <para>Verified against SheetJS probes:
+    /// <list type="bullet">
+    ///   <item><c>[__EMPTY, ∅, __EMPTY]</c> →
+    ///     <c>[__EMPTY, __EMPTY_1, __EMPTY_2]</c></item>
+    ///   <item><c>[∅, __EMPTY, ∅]</c> →
+    ///     <c>[__EMPTY, __EMPTY_1, __EMPTY_2]</c></item>
+    ///   <item><c>[__EMPTY_1, ∅, ∅]</c> →
+    ///     <c>[__EMPTY_1, __EMPTY, __EMPTY_2]</c></item>
+    ///   <item><c>[a, a, a]</c> → <c>[a, a_1, a_2]</c></item>
+    ///   <item><c>[a, a, a_1]</c> → <c>[a, a_1, a_1_1]</c> (the 3rd
+    ///     column's desired <c>a_1</c> is taken, so it becomes
+    ///     <c>a_1_1</c>; this is SheetJS's actual behavior)</item>
+    ///   <item><c>[a, __EMPTY]</c> with a 4-col data row →
+    ///     <c>[a, __EMPTY, __EMPTY_1, __EMPTY_2]</c></item>
+    ///   <item><c>['', '']</c> → <c>['', '_1']</c> (empty-string headers
+    ///     dup-suffix the same way)</item>
+    /// </list></para>
     /// </summary>
-    private static string[] BuildHeaders(IXLWorksheet sheet, int headerRow, int firstCol, int lastCol)
+    private static string[] BuildHeaders(IXLWorksheet sheet, int headerRow, int firstCol, int headerLastCol, int globalLastCol)
     {
-        int width = lastCol - firstCol + 1;
-        var headers = new string[width];
-        int syntheticCounter = 0;
-
+        int width = globalLastCol - firstCol + 1;
+        var desired = new string[width];
         for (int i = 0; i < width; i++)
         {
             int col = firstCol + i;
+            if (col > headerLastCol)
+            {
+                desired[i] = SyntheticEmptyKey;
+                continue;
+            }
             IXLCell cell = sheet.Cell(headerRow, col);
-            if (IsMissing(cell))
-            {
-                headers[i] = syntheticCounter == 0
-                    ? SyntheticEmptyKey
-                    : $"{SyntheticEmptyKey}_{syntheticCounter}";
-                syntheticCounter++;
-                continue;
-            }
-            // SheetJS coerces header cells to string via the same logic
-            // as cell text; numbers become decimal strings, dates become
-            // their serial-as-string, bools become "true"/"false".
-            string raw = HeaderToString(cell);
-            headers[i] = raw;
+            desired[i] = IsMissing(cell) ? SyntheticEmptyKey : HeaderToString(cell);
         }
 
-        // Apply SheetJS dup-name suffixing: SECOND and later occurrences
-        // get _1, _2, ... — first occurrence stays bare. Synthetic
-        // __EMPTY headers do NOT participate (each carries its own
-        // _N from the synthetic counter).
-        var seen = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (int i = 0; i < headers.Length; i++)
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var resolved = new string[width];
+        for (int i = 0; i < width; i++)
         {
-            string name = headers[i];
-            // Synthetic __EMPTY_N already unique.
-            if (name == SyntheticEmptyKey ||
-                (name.StartsWith(SyntheticEmptyKey + "_", StringComparison.Ordinal)))
+            string baseName = desired[i];
+            if (used.Add(baseName))
             {
+                resolved[i] = baseName;
                 continue;
             }
-            if (seen.TryGetValue(name, out int count))
+            int n = 1;
+            string candidate;
+            do
             {
-                int nextIdx = count + 1;
-                headers[i] = $"{name}_{nextIdx}";
-                seen[name] = nextIdx;
-            }
-            else
-            {
-                seen[name] = 0;
-            }
+                candidate = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}_{n}");
+                n++;
+            } while (!used.Add(candidate));
+            resolved[i] = candidate;
         }
-
-        return headers;
+        return resolved;
     }
 
     /// <summary>
-    /// Extend the used-range right edge if a particular row has cells
-    /// beyond <paramref name="lastCol"/>. ClosedXML's
-    /// <c>RangeUsed</c> already covers the union, but a defensive
-    /// per-row scan keeps the ragged-long detection robust if the
-    /// workbook is shaped unusually.
+    /// Largest used column number in <paramref name="rowIdx"/>, or
+    /// <paramref name="fallbackLastCol"/> if the row has no used cells.
     /// </summary>
-    private static int ExtendRangeForRow(IXLWorksheet sheet, int rowIdx, int firstCol, int lastCol)
+    private static int GetRowLastUsedColumn(IXLWorksheet sheet, int rowIdx, int fallbackLastCol)
     {
         IXLRow row = sheet.Row(rowIdx);
         IXLCell? last = row.LastCellUsed();
         if (last is null)
         {
-            return lastCol;
+            return fallbackLastCol;
         }
-        return Math.Max(lastCol, last.Address.ColumnNumber);
-    }
-
-    /// <summary>
-    /// Where the synthetic <c>__EMPTY_N</c> suffix counter should
-    /// resume for over-shoot columns. SheetJS's counter is continuous
-    /// across the header row and the ragged-long over-shoot cells, so
-    /// if the header row already used <c>__EMPTY</c> and
-    /// <c>__EMPTY_1</c>, the next over-shoot column would be
-    /// <c>__EMPTY_2</c>.
-    /// </summary>
-    private static int ExtractSyntheticIndexStart(string[] headers)
-    {
-        int max = -1;
-        foreach (string h in headers)
-        {
-            if (h == SyntheticEmptyKey)
-            {
-                if (max < 0) max = 0;
-            }
-            else if (h.StartsWith(SyntheticEmptyKey + "_", StringComparison.Ordinal)
-                     && int.TryParse(h.AsSpan(SyntheticEmptyKey.Length + 1), out int n))
-            {
-                if (n > max) max = n;
-            }
-        }
-        return max < 0 ? 0 : max + 1;
+        return Math.Max(fallbackLastCol, last.Address.ColumnNumber);
     }
 
     /// <summary>
@@ -353,7 +345,31 @@ public sealed class XlsxReader : IDatasetReader
     /// <summary>
     /// Coerce a header cell to the string SheetJS would use as the
     /// object key. Empty string is allowed (preserved as the empty
-    /// key); numbers / bools / dates render as their default text.
+    /// key).
+    ///
+    /// <para><b>Formatting parity (round-7 finding):</b> SheetJS derives
+    /// header keys from the cell's <i>formatted text</i> (the <c>w</c>
+    /// property in SheetJS's cell model), not from the raw numeric
+    /// value. For a date cell formatted <c>yyyy-mm-dd</c> with serial
+    /// 45000, SheetJS returns the key <c>"2023-03-15"</c>; for a
+    /// number cell formatted <c>0.00</c> holding the value 5, SheetJS
+    /// returns the key <c>"5.00"</c>. Empirically verified probe vs.
+    /// the SheetJS <c>xlsx</c> package.</para>
+    ///
+    /// <para>ClosedXML's <see cref="IXLCell.GetFormattedString()"/>
+    /// applies the cell's number-format string (or the workbook's
+    /// default for unformatted cells), which agrees with SheetJS for
+    /// the common ISO-ish formats and plain numeric output. Exotic
+    /// custom formats and locale-sensitive output (currency,
+    /// thousands separators) are a known residual where ClosedXML's
+    /// formatter may diverge from SheetJS's SSF — tests should pin
+    /// invariant-culture cases.</para>
+    ///
+    /// <para>Note the asymmetry vs. <see cref="ConvertCellValue"/>:
+    /// data cells use the RAW serial / numeric value (so a date data
+    /// cell becomes its Excel serial number, not its formatted text);
+    /// only header cells use the formatted string. This mirrors
+    /// SheetJS exactly.</para>
     /// </summary>
     private static string HeaderToString(IXLCell cell)
     {
@@ -361,11 +377,6 @@ public sealed class XlsxReader : IDatasetReader
         return v.Type switch
         {
             XLDataType.Text => v.GetText(),
-            XLDataType.Number => v.GetNumber()
-                .ToString(System.Globalization.CultureInfo.InvariantCulture),
-            XLDataType.Boolean => v.GetBoolean() ? "TRUE" : "FALSE",
-            XLDataType.DateTime => ToExcelSerial(v.GetDateTime())
-                .ToString(System.Globalization.CultureInfo.InvariantCulture),
             _ => cell.GetFormattedString(),
         };
     }

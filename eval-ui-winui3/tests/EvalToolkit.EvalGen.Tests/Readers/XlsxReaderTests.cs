@@ -497,4 +497,315 @@ public class XlsxReaderTests : IDisposable
         Assert.Equal(2.0, XlsxReader.ToExcelSerial(new DateTime(1900, 1, 1)), 6);
         Assert.Equal(61.0, XlsxReader.ToExcelSerial(new DateTime(1900, 3, 1)), 6);
     }
+
+    // ── round-7 blockers: unified header-key collision resolution ─────
+    //
+    // GPT-5.5 (round 7 BLOCK B1) flagged that SheetJS treats explicit
+    // and synthetic header keys uniformly under one collision-resolution
+    // process. The Opus-4.8 (round 7 BLOCK B1) finding adds the
+    // formatted-string requirement for non-text header keys. Both are
+    // empirically verified against SheetJS sheet_to_json.
+
+    [Fact]
+    public void Read_ExplicitEmptyHeader_AroundMissingHeader_RoundRobinsSuffix()
+    {
+        // Probe: [['__EMPTY', undefined, '__EMPTY'], [1,2,3]]
+        //   → [{ "__EMPTY":1, "__EMPTY_1":2, "__EMPTY_2":3 }]
+        //
+        // Explicit __EMPTY at position 0 wins the base name; the
+        // missing-header position 1 wants __EMPTY (taken) → __EMPTY_1;
+        // the second explicit __EMPTY at position 2 also wants __EMPTY
+        // (taken), tries __EMPTY_1 (taken) → __EMPTY_2.
+        string path = WriteWorkbook("emptycol1.xlsx", new object?[][]
+        {
+            new object?[] { "__EMPTY", null, "__EMPTY" },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["__EMPTY"]);
+        Assert.Equal(2L, r.Records[0]["__EMPTY_1"]);
+        Assert.Equal(3L, r.Records[0]["__EMPTY_2"]);
+    }
+
+    [Fact]
+    public void Read_TwoExplicitEmptyHeaders_DupSuffix()
+    {
+        // Probe: [['__EMPTY', '__EMPTY', 'a'], [1,2,3]]
+        //   → [{ "__EMPTY":1, "__EMPTY_1":2, "a":3 }]
+        string path = WriteWorkbook("emptycol2.xlsx", new object?[][]
+        {
+            new object?[] { "__EMPTY", "__EMPTY", "a" },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["__EMPTY"]);
+        Assert.Equal(2L, r.Records[0]["__EMPTY_1"]);
+        Assert.Equal(3L, r.Records[0]["a"]);
+    }
+
+    [Fact]
+    public void Read_ExplicitEmptyOne_ThenMissing_PicksSmallestAvailableSuffix()
+    {
+        // Probe: [['__EMPTY_1', undefined, undefined], [1,2,3]]
+        //   → [{ "__EMPTY_1":1, "__EMPTY":2, "__EMPTY_2":3 }]
+        //
+        // Position 0 explicit __EMPTY_1 occupies that slot. Position 1
+        // missing → desired __EMPTY → not taken → __EMPTY. Position 2
+        // missing → desired __EMPTY (taken), try __EMPTY_1 (taken) →
+        // __EMPTY_2.
+        string path = WriteWorkbook("emptycol3.xlsx", new object?[][]
+        {
+            new object?[] { "__EMPTY_1", null, null },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["__EMPTY_1"]);
+        Assert.Equal(2L, r.Records[0]["__EMPTY"]);
+        Assert.Equal(3L, r.Records[0]["__EMPTY_2"]);
+    }
+
+    [Fact]
+    public void Read_MissingThenExplicitEmpty_RoundRobinsSuffix()
+    {
+        // Probe: [[undefined, '__EMPTY', undefined], [1,2,3]]
+        //   → [{ "__EMPTY":1, "__EMPTY_1":2, "__EMPTY_2":3 }]
+        string path = WriteWorkbook("emptycol4.xlsx", new object?[][]
+        {
+            new object?[] { null, "__EMPTY", null },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["__EMPTY"]);
+        Assert.Equal(2L, r.Records[0]["__EMPTY_1"]);
+        Assert.Equal(3L, r.Records[0]["__EMPTY_2"]);
+    }
+
+    [Fact]
+    public void Read_OvershootCollision_With_ExplicitEmptyInHeader()
+    {
+        // Probe: [['a', '__EMPTY'], [1, 2, 3, 4]]
+        //   → [{ a:1, "__EMPTY":2, "__EMPTY_1":3, "__EMPTY_2":4 }]
+        //
+        // Overshoot columns 3 and 4 want __EMPTY (taken at col 2)
+        // and __EMPTY_1 (not taken yet — assigned to col 3), then
+        // col 4 wants __EMPTY again and gets __EMPTY_2.
+        string path = WriteWorkbook("overshoot-explicit-empty.xlsx", new object?[][]
+        {
+            new object?[] { "a", "__EMPTY" },
+            new object?[] { 1, 2, 3, 4 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["a"]);
+        Assert.Equal(2L, r.Records[0]["__EMPTY"]);
+        Assert.Equal(3L, r.Records[0]["__EMPTY_1"]);
+        Assert.Equal(4L, r.Records[0]["__EMPTY_2"]);
+    }
+
+    [Fact]
+    public void Read_ThreeExplicitDuplicateHeaders_SequentialSuffixes()
+    {
+        // Probe: [['a', 'a', 'a'], [1, 2, 3]]
+        //   → [{ a:1, a_1:2, a_2:3 }]
+        string path = WriteWorkbook("threea.xlsx", new object?[][]
+        {
+            new object?[] { "a", "a", "a" },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["a"]);
+        Assert.Equal(2L, r.Records[0]["a_1"]);
+        Assert.Equal(3L, r.Records[0]["a_2"]);
+    }
+
+    [Fact]
+    public void Read_ExplicitAlreadySuffixedAndDuplicate_ChainsSuffix()
+    {
+        // Probe: [['a', 'a', 'a_1'], [1, 2, 3]]
+        //   → [{ a:1, a_1:2, a_1_1:3 }]
+        //
+        // Position 0 'a' → a. Position 1 'a' (taken) → a_1.
+        // Position 2 'a_1' (now taken) → a_1_1 (chained suffix).
+        string path = WriteWorkbook("a-a-a1.xlsx", new object?[][]
+        {
+            new object?[] { "a", "a", "a_1" },
+            new object?[] { 1, 2, 3 },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["a"]);
+        Assert.Equal(2L, r.Records[0]["a_1"]);
+        Assert.Equal(3L, r.Records[0]["a_1_1"]);
+    }
+
+    [Fact]
+    public void Read_AllEmptyStringHeaderRow_IsKnownDivergence()
+    {
+        // ClosedXML's RangeUsed() (and every XLCellsUsedOptions
+        // variant — verified empirically against ClosedXML 0.105)
+        // excludes cells whose ONLY content is the empty string when
+        // there are no adjacent non-empty cells in the same row or
+        // column. A row that is ENTIRELY empty-string cells therefore
+        // gets dropped from the bounding box, and the next row is
+        // mistakenly treated as the header.
+        //
+        // SheetJS would emit [{"":1, "_1":2}] for this pathological
+        // input. Our reader emits zero records (with row 2 becoming
+        // the header row [1, 2]). This is documented as a known
+        // residual in XlsxReader.cs — the workaround (raw-XML
+        // dimension parsing) is not justified by real-world risk.
+        //
+        // This test pins the current behavior so that any change in
+        // ClosedXML's behavior (or our handling of it) is caught
+        // explicitly and the documentation can be updated to match.
+        string path = WriteWorkbook("all-empty-headers.xlsx", new object?[][]
+        {
+            new object?[] { "", "" },
+            new object?[] { 1, 2 },
+        });
+        var r = new XlsxReader().Read(path);
+        // Current (known-divergent) behavior: row 2 treated as header,
+        // no data rows → empty result.
+        Assert.Empty(r.Records);
+    }
+
+    [Fact]
+    public void Read_EmptyStringHeader_AlongsideRealHeader_RoundTripsThroughBoth()
+    {
+        // PRACTICAL case where empty-string headers DO work: at least
+        // one non-empty-string cell exists in row 1 (or in the same
+        // column elsewhere), so ClosedXML's RangeUsed includes the
+        // row.
+        //
+        // Mirror SheetJS: ['id', '', ''] header, [1, 'a', 'b'] data
+        //   → [{"id":1, "":"a", "_1":"b"}]
+        string path = WriteWorkbook("empty-mixed.xlsx", new object?[][]
+        {
+            new object?[] { "id", "", "" },
+            new object?[] { 1, "a", "b" },
+        });
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(1L, r.Records[0]["id"]);
+        Assert.Equal("a", r.Records[0][""]);
+        Assert.Equal("b", r.Records[0]["_1"]);
+    }
+
+    // ── Opus B1: formatted-string header coercion ─────────────────────
+
+    [Fact]
+    public void Read_DateHeader_With_DateFormat_UsesFormattedString()
+    {
+        // Probe: { A1: n:45000 z:'yyyy-mm-dd' w:'2023-03-15', A2: 'x' }
+        //   → [{ "2023-03-15":"x" }]
+        //
+        // SheetJS derives header keys from the cell's formatted text
+        // (w), not the raw serial. ClosedXML's GetFormattedString
+        // applies the cell's number-format string and produces the
+        // same display text.
+        string path = Path.Combine(_tmpDir, "date-header.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            var hdr = s.Cell(1, 1);
+            hdr.Value = 45000;
+            hdr.Style.NumberFormat.Format = "yyyy-mm-dd";
+            s.Cell(2, 1).Value = "x";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("x", r.Records[0]["2023-03-15"]);
+    }
+
+    [Fact]
+    public void Read_NumericHeader_With_DecimalFormat_UsesFormattedString()
+    {
+        // Probe: { A1: n:5 z:'0.00' w:'5.00', A2: 'y' }
+        //   → [{ "5.00":"y" }]
+        string path = Path.Combine(_tmpDir, "num-header.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            var hdr = s.Cell(1, 1);
+            hdr.Value = 5;
+            hdr.Style.NumberFormat.Format = "0.00";
+            s.Cell(2, 1).Value = "y";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("y", r.Records[0]["5.00"]);
+    }
+
+    [Fact]
+    public void Read_NumericHeader_NoFormat_FallsBackToDefaultText()
+    {
+        // Probe: { A1: n:5.5 (no z, no w), A2: 'z' } → [{ "5.5":"z" }]
+        string path = Path.Combine(_tmpDir, "num-header-default.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            s.Cell(1, 1).Value = 5.5;
+            s.Cell(2, 1).Value = "z";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("z", r.Records[0]["5.5"]);
+    }
+
+    [Fact]
+    public void Read_DateDataCell_StillEmitsRawSerial_NotFormattedString()
+    {
+        // Mirror probe: SheetJS uses the formatted string for HEADER
+        // cells but the RAW serial for DATA cells. The asymmetry must
+        // be preserved: only HeaderToString uses GetFormattedString.
+        //
+        // Probe: header 'col', data n:45000 z:'yyyy-mm-dd' w:'2023-03-15'
+        //   → [{ "col":45000 }]
+        //
+        // ClosedXML auto-promotes a numeric cell with a date format to
+        // DataType.DateTime, so ConvertCellValue follows the DateTime
+        // path and emits the serial as a DOUBLE (via ToExcelSerial's
+        // TotalDays). SheetJS emits a JS number (double-precision), so
+        // both serialize identically in the parity envelope.
+        string path = Path.Combine(_tmpDir, "date-data.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            s.Cell(1, 1).Value = "col";
+            var d = s.Cell(2, 1);
+            d.Value = 45000;
+            d.Style.NumberFormat.Format = "yyyy-mm-dd";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal(45000.0, (double)r.Records[0]["col"]!, 6);
+    }
+
+    [Fact]
+    public void Read_BooleanHeader_StaysAsTrueFalseUppercase()
+    {
+        // Regression: ensure switching to GetFormattedString didn't
+        // change Boolean header output. ClosedXML formats Boolean as
+        // "TRUE"/"FALSE" which matches SheetJS.
+        string path = Path.Combine(_tmpDir, "bool-header.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            var s = wb.AddWorksheet("Sheet1");
+            s.Cell(1, 1).Value = true;
+            s.Cell(2, 1).Value = "yes";
+            wb.SaveAs(path);
+        }
+        var r = new XlsxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("yes", r.Records[0]["TRUE"]);
+    }
 }
