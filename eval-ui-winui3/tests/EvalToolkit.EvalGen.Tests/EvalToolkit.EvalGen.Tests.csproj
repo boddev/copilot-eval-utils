@@ -26,6 +26,8 @@
   <ItemGroup>
     <!-- PDF post-processing probe ground truth (35 scenarios) -->
     <EmbeddedResource Include="Readers\PdfPostProcessResults.json" />
+    <!-- Writers probe ground truth (42 scenarios captured against live TS writers) -->
+    <EmbeddedResource Include="Writers\WritersProbeResults.json" />
   </ItemGroup>
 
 </Project>
