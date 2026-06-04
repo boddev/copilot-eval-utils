@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EvalToolkit.Cli/EvalToolkit.Cli.csproj" />
+    <Project Path="src/EvalToolkit.Core/EvalToolkit.Core.csproj" />
+    <Project Path="src/EvalToolkit.EvalGen/EvalToolkit.EvalGen.csproj" />
+    <Project Path="src/EvalToolkit.EvalScore/EvalToolkit.EvalScore.csproj" />
+    <Project Path="src/EvalToolkit.WorkIQ/EvalToolkit.WorkIQ.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EvalToolkit.EvalGen.Tests/EvalToolkit.EvalGen.Tests.csproj" />
+    <Project Path="tests/EvalToolkit.EvalScore.Tests/EvalToolkit.EvalScore.Tests.csproj" />
+    <Project Path="tests/EvalToolkit.Parity.Tests/EvalToolkit.Parity.Tests.csproj" />
+  </Folder>
+</Solution>

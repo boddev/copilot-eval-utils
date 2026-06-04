@@ -1,0 +1,67 @@
+name: Build EvalToolkit (WinUI 3)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'eval-ui-winui3/**'
+      - '.github/workflows/build-evaltoolkit-winui3.yml'
+  pull_request:
+    paths:
+      - 'eval-ui-winui3/**'
+      - '.github/workflows/build-evaltoolkit-winui3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build, test, and package
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: eval-ui-winui3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Node.js (parity harness shells out to TS impl)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            eval-gen/package-lock.json
+
+      - name: Restore eval-gen (TS reference impl for parity tests)
+        working-directory: eval-gen
+        run: npm ci
+
+      - name: dotnet restore
+        run: dotnet restore
+
+      - name: dotnet build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: dotnet test
+        run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test-results.trx"
+
+      # MSIX packaging + signing wired in phase C todos `msix-packaging` /
+      # `signing`. Until then, this workflow just gates the engine + parity
+      # ports on every push so divergence from the TS impl is caught early.
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaltoolkit-test-results
+          path: eval-ui-winui3/**/TestResults/*.trx
+          if-no-files-found: warn

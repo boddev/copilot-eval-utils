@@ -1,0 +1,27 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NeutralLanguage>en-US</NeutralLanguage>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition=" '$(GITHUB_ACTIONS)' == 'true' ">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!--
+    EvalToolkit targets .NET 10 LTS. Originally specced as .NET 8 LTS, but
+    the build environment ships .NET 10 (released November 2025, LTS, 3-year
+    support window). No architectural impact; framework upgrade is forward
+    compatible with all engine dependencies (System.CommandLine, Polly v8,
+    System.Text.Json source generation, etc.).
+    The WinUI 3 head (Phase B) adds a Windows-specific TFM
+    (net10.0-windows10.0.19041.0) only on that one project.
+  -->
+
+</Project>
