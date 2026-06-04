@@ -127,6 +127,18 @@ public sealed class DocxReader : IDatasetReader
                 {
                     continue;
                 }
+                // Skip paragraphs nested inside <w:customXml> at block
+                // level. mammoth has no handler for w:customXml so it
+                // drops the subtree entirely (verified probe
+                // `customXml-wraps-run`: customXml content vanishes
+                // including any nested paragraphs). Matched here by
+                // LocalName so this filter covers both CustomXmlRun
+                // (run-level) and CustomXmlBlock (block-level)
+                // without depending on the SDK's typed-class layout.
+                if (HasCustomXmlAncestor(p))
+                {
+                    continue;
+                }
                 string text = ConcatParagraphText(p);
                 string trimmed = JsCompat.Trim(text);
                 if (trimmed.Length == 0)
@@ -242,6 +254,18 @@ public sealed class DocxReader : IDatasetReader
                 //    here.
                 continue;
             }
+            if (HasCustomXmlAncestor(el))
+            {
+                // mammoth has NO handler for <w:customXml> — drops
+                // the subtree (verified probe `customXml-wraps-run`:
+                // mammoth output `"before  after"` (two spaces) for
+                // a customXml that wraps a normal run with "INSIDE").
+                // Without this filter the typed Text descendant path
+                // would pick up "INSIDE" — a real (if narrow)
+                // over-extraction divergence flagged by Opus-4.8
+                // round-2.
+                continue;
+            }
             switch (el)
             {
                 case Text t:
@@ -255,24 +279,26 @@ public sealed class DocxReader : IDatasetReader
                     sb.Append('\t');
                     break;
                 case OpenXmlUnknownElement u
-                    when u.NamespaceUri == WordprocessingNamespace:
-                    // <w:smartTag>, custom-XML inserts, and any other
-                    // wrapper the OpenXml SDK does not know about
-                    // (e.g. third-party extensions) are parsed as
-                    // OpenXmlUnknownElement — AND their descendants
-                    // are too. That means typed `case Text t` above
-                    // misses <w:t> nodes underneath them. To preserve
-                    // mammoth's transparent-wrapper behavior (verified
-                    // probe `smartTag`: "tagged rest"), pick up the
-                    // text/tab content from unknown <w:t>/<w:tab>
-                    // descendants explicitly. We skip leaf unknowns
-                    // here only when their *parent* in the unknown
-                    // subtree is itself unknown; the outermost
-                    // unknown wrapper's contribution is what counts.
-                    // The simpler safe rule: when an unknown <w:t>
-                    // or <w:tab> appears AND none of its known-typed
-                    // ancestors handled it (which is always true
-                    // since they're unknown), append it here.
+                    when u.NamespaceUri == WordprocessingNamespace
+                      && (u.LocalName == "t" || u.LocalName == "tab")
+                      && HasUnknownSmartTagAncestor(u):
+                    // <w:smartTag> is allowlisted by mammoth
+                    // (`xmlElementReaders["w:smartTag"] = readChildElements`)
+                    // but the OpenXml SDK parses it as
+                    // OpenXmlUnknownElement — AND its descendants
+                    // (<w:r>, <w:t>, <w:tab>) inherit unknown status.
+                    // The typed `case Text t` branch above misses
+                    // them. We restore mammoth's transparent-wrapper
+                    // behavior for smartTag (verified probe
+                    // `smartTag`: "tagged rest") — but ONLY when the
+                    // unknown <w:t>/<w:tab> sits beneath an unknown
+                    // <w:smartTag>. Any OTHER unknown w: wrapper
+                    // (e.g., <w:fooBar>, custom-XML extensions
+                    // unknown to mammoth) is dropped to match
+                    // mammoth's allowlist-recursion semantics
+                    // (verified probe `unknown-w-wrapper`: mammoth
+                    // output `"a  b"` for <w:fooBar><w:r><w:t>X</w:t>
+                    // <w:t>Y</w:t></w:r></w:fooBar>).
                     switch (u.LocalName)
                     {
                         case "t":
@@ -292,6 +318,48 @@ public sealed class DocxReader : IDatasetReader
         return sb.ToString();
     }
 
+    /// <summary>True if any ancestor of <paramref name="el"/> is a
+    /// WordprocessingML <c>&lt;w:customXml&gt;</c> element (matched by
+    /// LocalName + namespace so it covers BOTH OpenXml SDK's typed
+    /// classes — <see cref="CustomXmlRun"/> for run-level and
+    /// <see cref="CustomXmlBlock"/> for block-level — without
+    /// depending on a particular SDK class hierarchy).</summary>
+    private static bool HasCustomXmlAncestor(OpenXmlElement el)
+    {
+        foreach (OpenXmlElement a in el.Ancestors())
+        {
+            if (a.NamespaceUri == WordprocessingNamespace &&
+                a.LocalName == "customXml")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>True if any UNKNOWN ancestor of <paramref name="el"/>
+    /// is a WordprocessingML <c>&lt;w:smartTag&gt;</c>. The "unknown"
+    /// qualifier matters because mammoth's smartTag transparency
+    /// applies ONLY when smartTag itself is in the parse path (it's
+    /// the only mammoth-allowlisted wrapper whose subtree the OpenXml
+    /// SDK leaves entirely as OpenXmlUnknownElement). Other unknown
+    /// w: wrappers (<c>&lt;w:fooBar&gt;</c>, third-party extensions)
+    /// must drop their subtree to match mammoth's allowlist
+    /// recursion.</summary>
+    private static bool HasUnknownSmartTagAncestor(OpenXmlElement el)
+    {
+        foreach (OpenXmlElement a in el.Ancestors())
+        {
+            if (a is OpenXmlUnknownElement &&
+                a.NamespaceUri == WordprocessingNamespace &&
+                a.LocalName == "smartTag")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private const string WordprocessingNamespace =
         "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -304,5 +372,7 @@ public sealed class DocxReader : IDatasetReader
         "br=dropped (including type=page); fldSimple display=dropped (fldChar complex=kept); " +
         "AlternateContent Choice=dropped (Fallback=used); " +
         "w:ins=transparent (kept); w:del=dropped; w:moveFrom/w:moveTo=dropped; " +
+        "w:customXml=dropped (run + block level); " +
+        "unknown w: wrappers=dropped (except w:smartTag which is mammoth-allowlisted); " +
         "headers/footers=ignored; comments/footnotes/endnotes=ignored";
 }

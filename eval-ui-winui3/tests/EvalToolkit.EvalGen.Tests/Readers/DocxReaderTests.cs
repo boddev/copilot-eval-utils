@@ -803,4 +803,67 @@ public class DocxReaderTests : IDisposable
         Assert.Single(r.Records);
         Assert.Equal("before  after", r.Records[0]["content"]);
     }
+
+    // ===== Allowlist-recursion parity (post-Opus round-2 fix) =====
+    // Opus-4.8's round-2 review observed that mammoth uses an
+    // ALLOWLIST recursion model (xmlElementReaders dispatches by
+    // element name; unrecognized elements drop their subtree with a
+    // warning), whereas the C# walker was effectively DENYLIST
+    // (recurse into everything, skip a few known wrappers). The
+    // round-2 OpenXmlUnknownElement fix to make <w:smartTag> work
+    // also widened the over-extraction surface to ANY unknown w:
+    // wrapper. These two tests pin parity for the two cases Opus
+    // empirically demonstrated:
+    //   * <w:customXml> at run level: typed CustomXmlRun ancestor
+    //     filter required so the typed Text descendant path drops
+    //     the inner text.
+    //   * <w:fooBar> unknown wrapper: the unknown-element handler is
+    //     restricted to <w:t>/<w:tab> whose unknown-ancestor chain
+    //     contains an unknown <w:smartTag> (the sole mammoth-
+    //     allowlisted wrapper the OpenXml SDK leaves untyped).
+
+    [Fact]
+    public void Read_CustomXml_DescendantsDropped()
+    {
+        // mammoth probe `customXml-wraps-run`:
+        //   value:    "before  after\n\n"   (TWO spaces — INSIDE dropped)
+        //   messages: An unrecognised element was ignored: w:customXml
+        string path = BuildDocx("customxml.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:customXml w:element=\"cElement\" w:uri=\"urn:cust\">" +
+                    "<w:r><w:t>INSIDE</w:t></w:r>" +
+                  "</w:customXml>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before  after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_UnknownWordprocessingWrapper_DescendantsDropped()
+    {
+        // mammoth probe `unknown-w-wrapper`:
+        //   value:    "a  b\n\n"   (TWO spaces — X and Y dropped)
+        //   messages: An unrecognised element was ignored: w:fooBar
+        // Without the smartTag-only restriction on the unknown-element
+        // handler, the previous walker would have output "a XY b".
+        string path = BuildDocx("unknown-wrapper.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">a </w:t></w:r>" +
+                  "<w:fooBar>" +
+                    "<w:r><w:t>X</w:t></w:r>" +
+                    "<w:r><w:t>Y</w:t></w:r>" +
+                  "</w:fooBar>" +
+                  "<w:r><w:t xml:space=\"preserve\"> b</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("a  b", r.Records[0]["content"]);
+    }
 }
