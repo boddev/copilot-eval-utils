@@ -1,9 +1,8 @@
 namespace EvalToolkit.WorkIQ;
 
 /// <summary>
-/// Marker for the WorkIQ assembly. Replaced with real clients in the
-/// <c>workiq-clients-port</c> phase A todo (MCP/CLI client, A2A HTTP
-/// client, custom Polly resilience pipeline).
+/// Marker for the WorkIQ assembly. The project contains the shared MCP/CLI
+/// and A2A clients plus the custom Polly retry pipeline ported from TS.
 /// </summary>
 public static class WorkIqInfo
 {

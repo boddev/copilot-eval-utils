@@ -11,5 +11,6 @@
     <Project Path="tests/EvalToolkit.EvalGen.Tests/EvalToolkit.EvalGen.Tests.csproj" />
     <Project Path="tests/EvalToolkit.EvalScore.Tests/EvalToolkit.EvalScore.Tests.csproj" />
     <Project Path="tests/EvalToolkit.Parity.Tests/EvalToolkit.Parity.Tests.csproj" />
+    <Project Path="tests/EvalToolkit.WorkIQ.Tests/EvalToolkit.WorkIQ.Tests.csproj" />
   </Folder>
 </Solution>

@@ -32,6 +32,14 @@
     <PackageVersion Include="Polly" Version="8.6.6" />
 
     <!--
+      Reader-port slice 1 — interleaved per-port per cross-review plan:
+      CsvHelper drives the CSV/TSV reader; everything else (JSON/JSONL/TXT/MD)
+      uses BCL primitives. XLSX (ClosedXML), DOCX/PPTX (DocumentFormat.OpenXml),
+      and PDF (UglyToad.PdfPig) versions land in later reader-port slices.
+    -->
+    <PackageVersion Include="CsvHelper" Version="33.0.1" />
+
+    <!--
       Engine packages get added here as their ports land:
 
         Polly                            v8 — workiq retry pipeline
@@ -54,4 +62,3 @@
     -->
   </ItemGroup>
 </Project>
-
