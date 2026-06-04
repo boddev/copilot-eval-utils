@@ -1,8 +1,25 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <!--
+      Per Opus-4.8 round-4 review: EvalGen does NOT depend on WorkIQ
+      (mirrors TS where eval-gen has zero dependency on the agent
+      client). The earlier project reference was a scaffold mistake.
+      WorkIQ is consumed only by EvalScore (and the WinUI head) which
+      gets a direct reference to EvalToolkit.WorkIQ on those projects.
+    -->
     <ProjectReference Include="..\EvalToolkit.Core\EvalToolkit.Core.csproj" />
-    <ProjectReference Include="..\EvalToolkit.WorkIQ\EvalToolkit.WorkIQ.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reader-port slice 1: CsvHelper for csv-parse-faithful CSV/TSV. -->
+    <PackageReference Include="CsvHelper" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Expose internals to the test assembly so the chunker / converter
+         helpers can be unit-tested without flipping them to public.  -->
+    <InternalsVisibleTo Include="EvalToolkit.EvalGen.Tests" />
   </ItemGroup>
 
   <PropertyGroup>

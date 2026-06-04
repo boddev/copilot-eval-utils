@@ -28,6 +28,9 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
 
+    <!-- WorkIQ retry pipeline (workiq-clients-port). -->
+    <PackageVersion Include="Polly" Version="8.6.6" />
+
     <!--
       Engine packages get added here as their ports land:
 
