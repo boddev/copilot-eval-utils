@@ -152,18 +152,19 @@ public static class DatasetReader
             ".txt" or ".md" => new TextFileReader(),
             ".xlsx" => new XlsxReader(),
             ".docx" => new DocxReader(),
+            ".pptx" => new PptxReader(),
             ".xls" =>
                 throw new NotSupportedException(
                     "Reader for '.xls' (BIFF8 binary) is not ported. ClosedXML " +
                     "supports only the modern '.xlsx' XML format; '.xls' support " +
                     "would require an additional dependency (NPOI). Convert " +
                     "the file to .xlsx with Excel or LibreOffice and retry."),
-            ".pdf" or ".pptx" =>
+            ".pdf" =>
                 throw new NotSupportedException(
                     $"Reader for '{ext}' is not yet ported (slice {GetSliceForExtension(ext)} of readers-port). " +
-                    $"Slices 1-3 support: csv, tsv, json, jsonl, txt, md, xlsx, docx."),
+                    $"Slices 1-3 support: csv, tsv, json, jsonl, txt, md, xlsx, docx, pptx."),
             _ => throw new NotSupportedException(
-                $"Unsupported file format: {ext}. Supported (slices 1-3): csv, tsv, json, jsonl, txt, md, xlsx, docx."),
+                $"Unsupported file format: {ext}. Supported (slices 1-3): csv, tsv, json, jsonl, txt, md, xlsx, docx, pptx."),
         };
         return reader.Read(absolutePath);
     }
@@ -277,9 +278,8 @@ public static class DatasetReader
     private static string GetSliceForExtension(string ext) => ext switch
     {
         ".xlsx" or ".xls" => "2",
-        ".docx" => "3",
-        ".pptx" => "4",
-        ".pdf" => "5",
+        ".docx" or ".pptx" => "3",
+        ".pdf" => "4",
         _ => "?",
     };
 }
