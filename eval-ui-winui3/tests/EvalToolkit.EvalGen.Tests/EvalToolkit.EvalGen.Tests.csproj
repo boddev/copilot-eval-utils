@@ -23,4 +23,9 @@
     <ProjectReference Include="..\..\src\EvalToolkit.Core\EvalToolkit.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- PDF post-processing probe ground truth (35 scenarios) -->
+    <EmbeddedResource Include="Readers\PdfPostProcessResults.json" />
+  </ItemGroup>
+
 </Project>

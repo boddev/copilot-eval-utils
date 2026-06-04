@@ -83,6 +83,28 @@
     -->
     <PackageVersion Include="DocumentFormat.OpenXml" Version="3.1.1" />
 
+    <!--
+      Reader-port slice 3 — PDF via UglyToad.PdfPig. The TS readPdf
+      uses pdf-parse v2 (which wraps pdf.js) to extract per-page text;
+      PdfPig instead uses its own DocumentLayoutAnalysis text
+      extractors. The two libraries' glyph ordering / line
+      reconstruction heuristics differ enough that byte-exact raw
+      extraction is impossible — PDF parity is therefore SEMANTIC
+      ONLY (per Phase 0 / Section 11 / Opus-4.8 round-1 sub-slice C
+      guidance). The deterministic post-processing pipeline (control
+      char strip, CR normalize, `\n{1,}` split, `[ \t]+` collapse,
+      trim, empty filter, chunkText) is byte-exact and probed
+      independently of extraction in
+      `~/.copilot/session-state/.../pdf-probe/post-process-probe.js`.
+      Pin 0.1.14 — current stable on nuget.org.
+    -->
+    <PackageVersion Include="UglyToad.PdfPig" Version="0.1.14" />
+    <!-- The NuGet package id is "PdfPig" (the namespace is
+         UglyToad.PdfPig). Older versions used the prefixed id which
+         is why the README refers to it that way. Both aliases are
+         kept here so package references can use either id. -->
+    <PackageVersion Include="PdfPig" Version="0.1.14" />
+
 
   </ItemGroup>
 </Project>

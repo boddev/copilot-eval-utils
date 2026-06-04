@@ -18,6 +18,10 @@
     <PackageReference Include="ClosedXML" />
     <!-- Reader-port slice 3: DocumentFormat.OpenXml for mammoth-parity DOCX. -->
     <PackageReference Include="DocumentFormat.OpenXml" />
+    <!-- Reader-port slice 3 (sub-slice C): PdfPig (namespace
+         UglyToad.PdfPig) for PDF text extraction. Semantic parity
+         only with pdf-parse v2 — see PdfReader xmldoc. -->
+    <PackageReference Include="PdfPig" />
   </ItemGroup>
 
   <ItemGroup>

@@ -139,14 +139,15 @@ public class DatasetReaderTests : IDisposable
     }
 
     [Fact]
-    public void ReadDatasetFile_Slice4PlusFormat_ThrowsClearMessage()
+    public void ReadDatasetFile_UnsupportedFormat_ThrowsClearMessage()
     {
-        // Slice 2 ported .xlsx, slice 3 ported .docx; .pdf/.pptx
-        // remain deferred (slice 4/5). Update this test when those
-        // slices land.
-        string path = Write("data.pdf", "%PDF-stub");
+        // All slice-1/2/3 formats (csv, tsv, json, jsonl, txt, md,
+        // xlsx, docx, pptx, pdf) are now wired. The remaining
+        // deferred case is `.xls` (BIFF8 binary). Update this test
+        // when/if .xls support lands.
+        string path = Write("data.xls", "stub");
         var ex = Assert.Throws<NotSupportedException>(() => DatasetReader.ReadDatasetFile(path));
-        Assert.Contains("not yet ported", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("'.xls'", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
