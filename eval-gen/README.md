@@ -135,6 +135,13 @@ Directory discovery is recursive. Use `--extensions` when a folder contains mult
 
 Supported file formats include CSV, TSV, JSON, JSONL, XLSX, DOCX, PDF, PPTX, TXT, and Markdown. CSV is usually preferred for tabular connector datasets because each row becomes a record.
 
+#### Reader behavior contracts
+
+PPTX readers use the following canonical rules. Any reimplementation (including the WinUI 3 C# port) must mirror them:
+
+- **Slide numbering**: `slide_number` is the 1-based ordinal position in `presentation.xml`'s `<p:sldIdLst>` list. Hidden slides are included, matching PowerPoint's UI numbering. The number is independent of digits in `ppt/slides/slideN.xml` file names, which can diverge after slide reordering or deletion.
+- **Title selection**: choose the first non-empty paragraph from the shape whose `<p:nvSpPr>/<p:nvPr>/<p:ph>` marker has `type="title"` or `type="ctrTitle"`. Fall back to the first non-empty paragraph in slide XML/document order only when no titled placeholder exists.
+
 ### Source Adapter Options
 
 EvalGen also has early source-adapter support:

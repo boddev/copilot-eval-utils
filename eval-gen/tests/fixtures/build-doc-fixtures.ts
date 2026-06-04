@@ -143,8 +143,8 @@ export function buildSamplePptx(targetPath: string): void {
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide3.xml"/>
 </Relationships>`;
 
-  const slide = (title: string, bodyParas: string[]) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  const slide = (title: string, bodyParas: string[], hidden = false) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld${hidden ? ' show="0"' : ''} xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
   <p:cSld>
     <p:spTree>
       <p:sp>
@@ -214,6 +214,7 @@ export function buildSamplePptx(targetPath: string): void {
   zip.addFile('ppt/slides/slide2.xml', Buffer.from(slide(
     'Risks and Mitigations',
     ['Single-source risk for gadgets remains elevated.', 'Onboarding Gamma Components as second source.'],
+    true,
   ), 'utf-8'));
   zip.addFile('ppt/slides/_rels/slide2.xml.rels', Buffer.from(slideRels('../notesSlides/notesSlide2.xml'), 'utf-8'));
 

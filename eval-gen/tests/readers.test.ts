@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readDatasetFile } from '../src/readers';
+import { extractPptxSlideText, readDatasetFile } from '../src/readers';
 import { buildSamplePdf, buildSampleDocx, buildSamplePptx } from './fixtures/build-doc-fixtures';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -196,6 +196,65 @@ describe('readDatasetFile — document formats', () => {
   });
 
   describe('PPTX', () => {
+    it('selects title placeholder text even when the title shape is not first', () => {
+      for (const placeholderType of ['title', 'ctrTitle']) {
+        const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody><a:p><a:r><a:t>Body bullet appears first in XML</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr><p:nvPr><p:ph type="${placeholderType}"/></p:nvPr></p:nvSpPr>
+        <p:txBody><a:p><a:r><a:t>Canonical Slide Title</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:txBody><a:p><a:r><a:t>Trailing body paragraph</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>`;
+
+        const result = extractPptxSlideText(slideXml);
+
+        expect(result.title).toBe('Canonical Slide Title');
+        expect(result.body).toEqual(['Body bullet appears first in XML', 'Trailing body paragraph']);
+      }
+    });
+
+    it('falls back to the first paragraph when no title placeholder exists', () => {
+      const slideXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody><a:p><a:r><a:t>First paragraph fallback title</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:txBody><a:p><a:r><a:t>Second paragraph body</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>`;
+
+      const result = extractPptxSlideText(slideXml);
+
+      expect(result.title).toBe('First paragraph fallback title');
+      expect(result.body).toEqual(['Second paragraph body']);
+    });
+
+    it('numbers hidden slides by presentation order', async () => {
+      const result = await readDatasetFile(PPTX);
+      const slides = result.records.filter(r => typeof r.slide_number === 'number' && r.slide_number > 0);
+
+      // The fixture marks slide 2 with p:sld show="0". It must still count
+      // as slide_number 2 so downstream readers mirror PowerPoint UI numbering.
+      expect(slides.map(s => s.slide_number)).toEqual([1, 2, 3]);
+      expect(slides[1].title).toBe('Risks and Mitigations');
+      expect(slides[2].title).toBe('Next Steps');
+    });
+
     it('extracts slide titles, bodies, and speaker notes', async () => {
       const result = await readDatasetFile(PPTX);
       expect(result.format).toBe('pptx');

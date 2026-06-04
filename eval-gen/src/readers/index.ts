@@ -185,10 +185,16 @@ function chunkText(paragraphs: string[]): Record<string, unknown>[] {
  *     actually parse (slides, notes, presentation rels, slide rels, and —
  *     optionally — masters/layouts). This avoids eagerly decompressing
  *     embedded images, video, or OLE objects in large real-world decks.
- *   - Slide order and per-slide notes mapping come from OPC relationships
- *     (`ppt/_rels/presentation.xml.rels` + `ppt/slides/_rels/slideN.xml.rels`),
- *     not from filename digits. This is what the PPTX spec actually
- *     guarantees and survives slide reorder/delete.
+ *   - Slide order comes from `presentation.xml`'s `<p:sldIdLst>` via
+ *     `ppt/_rels/presentation.xml.rels`, not from filename digits. The
+ *     emitted `slide_number` is the 1-based ordinal position in that list,
+ *     including hidden slides, which matches PowerPoint's UI numbering.
+ *   - Per-slide notes mapping comes from OPC relationships
+ *     (`ppt/slides/_rels/slideN.xml.rels`).
+ *   - Title selection prefers the first paragraph in a shape marked with
+ *     `<p:nvSpPr>/<p:nvPr>/<p:ph type="title"/>` or `type="ctrTitle"`;
+ *     only slides without that placeholder marker fall back to the first
+ *     paragraph in slide XML/document order.
  *   - The XML parser is configured with `removeNSPrefix: true` so the
  *     walker matches local names (`p`, `t`, `sld`, etc.) regardless of
  *     which prefix the source file happens to use.
@@ -229,10 +235,8 @@ async function readPptx(filePath: string): Promise<Record<string, unknown>[]> {
     const slidePath = slideTarget.path;
     const buf = readEntry(slidePath);
     if (!buf) continue;
-    const paragraphs = extractDrawingMlParagraphs(buf);
-    if (paragraphs.length === 0) continue;
-    const title = paragraphs[0];
-    const body = paragraphs.slice(1);
+    const { title, body } = extractPptxSlideText(buf);
+    if (!title && body.length === 0) continue;
 
     // Resolve speaker notes via the slide's own rels file. The notes part
     // is referenced by Type=".../notesSlide" Target="../notesSlides/...".
@@ -243,6 +247,8 @@ async function readPptx(filePath: string): Promise<Record<string, unknown>[]> {
       : '';
 
     records.push({
+      // Canonical PPTX numbering: 1-based position in presentation.xml's
+      // sldIdLst, including hidden slides; never derive this from slideN.xml.
       slide_number: i + 1,
       title,
       content: body.join('\n'),
@@ -283,6 +289,11 @@ interface SlideTarget { path: string }
 /**
  * Resolve the ordered list of slide part paths via OPC relationships.
  * Returns absolute (package-relative) paths like `ppt/slides/slide1.xml`.
+ *
+ * Canonical slide numbering is the caller's 1-based ordinal position in the
+ * returned `presentation.xml` `<p:sldIdLst>` order. This includes hidden slides
+ * (matching PowerPoint's UI numbering) and is independent of the digits in
+ * `ppt/slides/slideN.xml` file names.
  *
  * Falls back to lexicographic-by-numeric-suffix scan over the supplied
  * `entryNames` if the spec parts are missing or unparseable (older or
@@ -428,6 +439,113 @@ function resolveRelTarget(sourceDir: string, target: string): string {
     }
   }
   return parts.join('/');
+}
+
+export interface PptxSlideText {
+  title: string;
+  body: string[];
+}
+
+interface PptxParagraphEntry {
+  text: string;
+  isTitlePlaceholder: boolean;
+}
+
+/**
+ * Extract canonical per-slide text from a PPTX slide XML part.
+ *
+ * Title selection is intentionally placeholder-first: prefer the first
+ * non-empty paragraph in a shape whose non-visual shape properties contain
+ * `<p:nvSpPr>/<p:nvPr>/<p:ph type="title"/>` or `type="ctrTitle"`. If no
+ * such title/center-title placeholder exists, fall back to the first non-empty
+ * paragraph in slide XML/document order. Body text preserves document order and
+ * excludes only the selected title paragraph.
+ *
+ * This is the canonical contract for reimplementations (including the C#
+ * WinUI 3 port) because title placeholders are often later than body or
+ * decorative shapes in z-order/document order.
+ */
+export function extractPptxSlideText(buffer: Buffer | string): PptxSlideText {
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    removeNSPrefix: true,
+    preserveOrder: true,
+    parseTagValue: false,
+    trimValues: false,
+  });
+  const xml = typeof buffer === 'string' ? buffer : buffer.toString('utf-8');
+  const parsed = parser.parse(xml) as unknown;
+  const entries = collectPptxSlideParagraphEntries(parsed);
+  if (entries.length === 0) return { title: '', body: [] };
+
+  const placeholderTitleIndex = entries.findIndex(e => e.isTitlePlaceholder);
+  const titleIndex = placeholderTitleIndex >= 0 ? placeholderTitleIndex : 0;
+
+  return {
+    title: entries[titleIndex].text,
+    body: entries.filter((_, i) => i !== titleIndex).map(e => e.text),
+  };
+}
+
+function collectPptxSlideParagraphEntries(parsed: unknown): PptxParagraphEntry[] {
+  const entries: PptxParagraphEntry[] = [];
+
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+
+    const obj = node as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(obj, 'sp')) {
+      const shapeNode = obj.sp;
+      const isTitlePlaceholder = isTitlePlaceholderShape(shapeNode);
+      for (const text of collectParagraphTexts(shapeNode)) {
+        entries.push({ text, isTitlePlaceholder });
+      }
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(obj, 'p')) {
+      const text = collectText(obj.p, 't');
+      if (text.trim().length > 0) {
+        entries.push({ text, isTitlePlaceholder: false });
+      }
+      return;
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      if (key === ':@') continue;
+      visit(value);
+    }
+  };
+
+  visit(parsed);
+  return entries;
+}
+
+function isTitlePlaceholderShape(shapeNode: unknown): boolean {
+  let isTitle = false;
+  walkForTag(shapeNode, 'nvSpPr', (nvSpPrNode) => {
+    walkForTag(nvSpPrNode, 'nvPr', (nvPrNode) => {
+      walkForElementAttrs(nvPrNode, 'ph', (attrs) => {
+        const type = attrs?.['@_type'];
+        if (type === 'title' || type === 'ctrTitle') isTitle = true;
+      });
+    });
+  });
+  return isTitle;
+}
+
+function collectParagraphTexts(node: unknown): string[] {
+  const paragraphs: string[] = [];
+  walkForTag(node, 'p', (paragraphNode) => {
+    const text = collectText(paragraphNode, 't');
+    if (text.trim().length > 0) paragraphs.push(text);
+  });
+  return paragraphs;
 }
 
 /**
