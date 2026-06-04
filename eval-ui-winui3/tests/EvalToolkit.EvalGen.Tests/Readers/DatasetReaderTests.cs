@@ -139,10 +139,36 @@ public class DatasetReaderTests : IDisposable
     }
 
     [Fact]
-    public void ReadDatasetFile_Slice2PlusFormat_ThrowsClearMessage()
+    public void ReadDatasetFile_Slice3PlusFormat_ThrowsClearMessage()
     {
-        string path = Write("data.xlsx", "");
+        // Slice 2 ported .xlsx; .docx/.pdf/.pptx remain deferred to
+        // slice 3. Update this test when those slices land.
+        string path = Write("data.docx", "");
         var ex = Assert.Throws<NotSupportedException>(() => DatasetReader.ReadDatasetFile(path));
         Assert.Contains("not yet ported", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReadDatasetFile_XlsxFile_DispatchesToXlsxReader()
+    {
+        // Slice-2 dispatch coverage: an .xlsx path goes through
+        // DatasetReader → XlsxReader → ReadResult with the same
+        // _source_file stamping the other readers do.
+        string path = Path.Combine(_tmpDir, "book.xlsx");
+        using (var wb = new ClosedXML.Excel.XLWorkbook())
+        {
+            var ws = wb.AddWorksheet("Sheet1");
+            ws.Cell(1, 1).Value = "id";
+            ws.Cell(1, 2).Value = "name";
+            ws.Cell(2, 1).Value = 1;
+            ws.Cell(2, 2).Value = "A";
+            wb.SaveAs(path);
+        }
+        var result = DatasetReader.ReadDatasetFile(path);
+        Assert.Equal(InputFormat.Xlsx, result.Format);
+        Assert.Single(result.Records);
+        Assert.Equal(1L, result.Records[0]["id"]);
+        Assert.Equal("A", result.Records[0]["name"]);
+        Assert.Equal("book.xlsx", result.Records[0][DatasetReader.SourceFileField]);
     }
 }

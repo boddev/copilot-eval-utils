@@ -34,10 +34,22 @@
     <!--
       Reader-port slice 1 — interleaved per-port per cross-review plan:
       CsvHelper drives the CSV/TSV reader; everything else (JSON/JSONL/TXT/MD)
-      uses BCL primitives. XLSX (ClosedXML), DOCX/PPTX (DocumentFormat.OpenXml),
-      and PDF (UglyToad.PdfPig) versions land in later reader-port slices.
+      uses BCL primitives.
     -->
     <PackageVersion Include="CsvHelper" Version="33.0.1" />
+
+    <!--
+      Reader-port slice 2 — XLSX via ClosedXML. ClosedXML wraps
+      DocumentFormat.OpenXml and provides a higher-level cell/range API
+      that's easier to keep parity with SheetJS sheet_to_json than the
+      raw OpenXml SAX/DOM. Behavior pinned by empirical node probes (see
+      reviewer round 6 ground-truth dump): dup-header _N suffixing
+      starting at the 2nd occurrence, __EMPTY synthetic-key fallback for
+      missing/over-shoot cells, sparse-row omission, native numeric
+      typing, Excel serial dates.
+    -->
+    <PackageVersion Include="ClosedXML" Version="0.105.0" />
+
 
     <!--
       Engine packages get added here as their ports land:

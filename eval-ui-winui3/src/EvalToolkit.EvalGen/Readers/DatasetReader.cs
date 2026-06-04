@@ -150,12 +150,19 @@ public static class DatasetReader
             ".json" => new JsonReader(),
             ".jsonl" => new JsonlReader(),
             ".txt" or ".md" => new TextFileReader(),
-            ".xlsx" or ".xls" or ".docx" or ".pdf" or ".pptx" =>
+            ".xlsx" => new XlsxReader(),
+            ".xls" =>
+                throw new NotSupportedException(
+                    "Reader for '.xls' (BIFF8 binary) is not ported. ClosedXML " +
+                    "supports only the modern '.xlsx' XML format; '.xls' support " +
+                    "would require an additional dependency (NPOI). Convert " +
+                    "the file to .xlsx with Excel or LibreOffice and retry."),
+            ".docx" or ".pdf" or ".pptx" =>
                 throw new NotSupportedException(
                     $"Reader for '{ext}' is not yet ported (slice {GetSliceForExtension(ext)} of readers-port). " +
-                    $"Slice 1 supports: csv, tsv, json, jsonl, txt, md."),
+                    $"Slices 1-2 support: csv, tsv, json, jsonl, txt, md, xlsx."),
             _ => throw new NotSupportedException(
-                $"Unsupported file format: {ext}. Supported (slice 1): csv, tsv, json, jsonl, txt, md."),
+                $"Unsupported file format: {ext}. Supported (slices 1-2): csv, tsv, json, jsonl, txt, md, xlsx."),
         };
         return reader.Read(absolutePath);
     }
