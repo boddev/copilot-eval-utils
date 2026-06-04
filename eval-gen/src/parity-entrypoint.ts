@@ -32,10 +32,10 @@
  *   2   bad CLI usage — stderr describes the issue
  *   3   reader threw — stderr has the error, stdout is the partial JSON
  *
- * Invocation (called from C# via `node dist/tests/parity-entrypoint.js`
- * after `npm run build`):
+ * Invocation (called from C# via `node dist/parity-entrypoint.js`
+ * after `npm run build` in eval-gen/):
  *
- *   node dist/tests/parity-entrypoint.js read <fixture-path> [--recursive] [--ext csv,json]
+ *   node dist/parity-entrypoint.js read <fixture-path> [--recursive] [--ext csv,json]
  *
  * The CLI surface is intentionally minimal; new operations (`write`,
  * `score`, `format-report`) get added as their port todos start.

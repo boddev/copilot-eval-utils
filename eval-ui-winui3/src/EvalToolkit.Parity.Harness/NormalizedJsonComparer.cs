@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace EvalToolkit.Parity.Harness;
@@ -40,19 +41,57 @@ public sealed class NormalizedJsonComparer
     /// the canonical "wire" form used by the TS side's
     /// <c>stableStringify</c>. C# producers should funnel through this
     /// before byte-comparing.
+    ///
+    /// Per Opus-4.8 round-3 review: the default encoder is
+    /// <see cref="JavaScriptEncoder.UnsafeRelaxedJsonEscaping"/> so
+    /// non-ASCII content (café 🎉) and HTML metacharacters
+    /// (<c>&lt;</c>, <c>&gt;</c>, <c>&amp;</c>) round-trip the same
+    /// way JS <c>JSON.stringify</c> emits them — otherwise any byte
+    /// comparison with TS output false-fails on realistic document
+    /// content. Per GPT-5.5 round-3 review: the
+    /// <see cref="JsonSerializerOptions"/> overload lets callers
+    /// override casing / naming policy when the C# type model has
+    /// PascalCase property names but the wire shape demands snake_case.
     /// </summary>
-    public static string WriteSortedJson<T>(T value)
+    public static string WriteSortedJson<T>(T value) =>
+        WriteSortedJson(value, options: null);
+
+    /// <summary>
+    /// Overload accepting explicit <see cref="JsonSerializerOptions"/>;
+    /// see <see cref="WriteSortedJson{T}(T)"/> for context.
+    /// </summary>
+    public static string WriteSortedJson<T>(T value, JsonSerializerOptions? options)
     {
-        // System.Text.Json has no built-in sort-keys option; serialize,
-        // re-parse, and re-emit through the recursive writer below.
-        string raw = JsonSerializer.Serialize(value);
+        JsonSerializerOptions effective = options is null
+            ? s_defaultRelaxedOptions
+            : EnsureRelaxedEncoder(options);
+
+        string raw = JsonSerializer.Serialize(value, effective);
         using JsonDocument doc = JsonDocument.Parse(raw);
         using MemoryStream ms = new();
-        using (Utf8JsonWriter writer = new(ms, new JsonWriterOptions { Indented = false }))
+        using (Utf8JsonWriter writer = new(ms,
+            new JsonWriterOptions { Indented = false, Encoder = effective.Encoder }))
         {
             WriteSortedElement(writer, doc.RootElement);
         }
         return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static readonly JsonSerializerOptions s_defaultRelaxedOptions =
+        new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    private static JsonSerializerOptions EnsureRelaxedEncoder(JsonSerializerOptions src)
+    {
+        // If the caller already chose an encoder, respect it; otherwise
+        // give them the relaxed escape so non-ASCII / HTML metas survive.
+        // Either way return a single new instance — the caller's frequency
+        // of calls dictates whether THIS allocation is hot; we don't
+        // intern arbitrary caller options here.
+        if (src.Encoder is not null && !ReferenceEquals(src.Encoder, JavaScriptEncoder.Default))
+        {
+            return src;
+        }
+        return new JsonSerializerOptions(src) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     }
 
     private static void WriteSortedElement(Utf8JsonWriter writer, JsonElement element)
@@ -217,7 +256,20 @@ public sealed class NormalizedJsonComparer
         JsonElement numEl = a.ValueKind == JsonValueKind.Number ? a : b;
         JsonElement strEl = a.ValueKind == JsonValueKind.String ? a : b;
         string s = strEl.GetString() ?? string.Empty;
-        return decimal.TryParse(s, System.Globalization.NumberStyles.Any,
+        // Per Opus-4.8 round-3 review: use NumberStyles.Float
+        // (whitespace/sign/decimal/exponent) instead of
+        // NumberStyles.Any. The latter accepts thousands separators,
+        // currency symbols, and parenthesized negatives, which JS
+        // `Number("1,000")` / `Number("$5")` / `Number("(5)")` all
+        // return NaN for — so defaulting to Any would MASK exactly
+        // the cell-type drift this opt-in is designed to surface.
+        const System.Globalization.NumberStyles JsLikeFloat =
+            System.Globalization.NumberStyles.AllowLeadingWhite
+            | System.Globalization.NumberStyles.AllowTrailingWhite
+            | System.Globalization.NumberStyles.AllowLeadingSign
+            | System.Globalization.NumberStyles.AllowDecimalPoint
+            | System.Globalization.NumberStyles.AllowExponent;
+        return decimal.TryParse(s, JsLikeFloat,
                 System.Globalization.CultureInfo.InvariantCulture, out decimal parsedStr)
             && numEl.TryGetDecimal(out decimal num)
             && parsedStr == num;

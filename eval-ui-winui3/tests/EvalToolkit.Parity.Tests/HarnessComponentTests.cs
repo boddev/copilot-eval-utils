@@ -9,6 +9,7 @@ namespace EvalToolkit.Parity.Tests;
 /// catch comparer / locator / option-shape regressions without
 /// requiring the eval-gen TypeScript side to be built.
 /// </summary>
+[Collection("Parity")]
 public class HarnessComponentTests
 {
     // ── NormalizedJsonComparer ────────────────────────────────────────
@@ -211,5 +212,93 @@ public class HarnessComponentTests
     {
         using JsonDocument doc = JsonDocument.Parse(json);
         return doc.RootElement.Clone();
+    }
+
+    // ── Review-driven hardening tests (round-3 reviewers) ────────────
+
+    /// <summary>
+    /// Per Opus-4.8 round-3 review: <see cref="NormalizedJsonComparer.WriteSortedJson{T}(T)"/>
+    /// must emit Latin-1+ non-ASCII content and HTML metacharacters
+    /// literally (no <c>\u</c>-escape) so a byte-comparison against
+    /// TS output doesn't false-fail on realistic document content with
+    /// accents or angle brackets.
+    ///
+    /// Note: supplementary-plane characters (emoji, etc.) are escaped
+    /// as surrogate-pair <c>\uXXXX\uXXXX</c> by both .NET's
+    /// <see cref="JavaScriptEncoder.UnsafeRelaxedJsonEscaping"/> and
+    /// by JS <c>JSON.stringify</c> when the surrogate is the only
+    /// representation, so they aren't tested here. The parity
+    /// comparer uses decoded-string equality (via JsonElement parse)
+    /// so emoji parity works regardless of escape representation.
+    /// </summary>
+    [Fact]
+    public void WriteSortedJson_PreservesNonAsciiAndHtmlMetacharsLiterally()
+    {
+        var value = new Dictionary<string, string>
+        {
+            ["accented"] = "café",
+            ["html"] = "<a href=\"x\">a&b</a>",
+        };
+        string actual = NormalizedJsonComparer.WriteSortedJson(value);
+
+        Assert.Contains("café", actual, StringComparison.Ordinal);
+        Assert.DoesNotContain("caf\\u00E9", actual, StringComparison.Ordinal);
+        Assert.Contains("<a href=\\\"x\\\">a&b</a>", actual, StringComparison.Ordinal);
+        // Keys must be sorted.
+        Assert.True(actual.IndexOf("\"accented\"", StringComparison.Ordinal) <
+                    actual.IndexOf("\"html\"", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Per Opus-4.8 round-3 review: <c>NumericStringEqualsNumber</c>
+    /// uses <see cref="System.Globalization.NumberStyles"/>.Float
+    /// semantics — it must NOT treat thousands-separator, currency,
+    /// or parenthesized-negative strings as equal to numbers (JS
+    /// <c>Number(...)</c> returns NaN for those). Otherwise the
+    /// opt-in masks exactly the cell-type drift it's supposed to
+    /// surface.
+    /// </summary>
+    [Theory]
+    [InlineData("1,000")]      // thousands separator: JS Number -> NaN
+    [InlineData("$5")]         // currency: JS Number -> NaN
+    [InlineData("(5)")]        // accountant negative: JS Number -> NaN
+    [InlineData(" 5,000.00 ")] // combined: JS Number -> NaN
+    public void Comparer_NumericStringMatch_RejectsNonJsNumberFormats(string suspect)
+    {
+        JsonElement left = Parse("""{"v":5000}""");
+        JsonElement right = Parse($$"""{"v":"{{suspect}}"}""");
+
+        NormalizedJsonComparer cmp = new(new NormalizedJsonComparisonOptions
+        {
+            NumericStringEqualsNumber = true,
+        });
+
+        var diffs = cmp.Compare(left, right);
+        Assert.NotEmpty(diffs);
+        Assert.Contains(diffs, d => d.Path == "/v");
+    }
+
+    /// <summary>
+    /// Conversely: a string that JS <c>Number()</c> would parse — bare
+    /// digits, leading sign, decimal, exponent, surrounding whitespace
+    /// — IS treated as equal under the opt-in, so the same opt-in still
+    /// covers the legitimate XLSX-style cell-type drift case.
+    /// </summary>
+    [Theory]
+    [InlineData("5000")]
+    [InlineData(" 5000 ")]
+    [InlineData("+5000")]
+    [InlineData("5.0e3")]
+    public void Comparer_NumericStringMatch_AcceptsJsLikeFloatFormats(string equiv)
+    {
+        JsonElement left = Parse("""{"v":5000}""");
+        JsonElement right = Parse($$"""{"v":"{{equiv}}"}""");
+
+        NormalizedJsonComparer cmp = new(new NormalizedJsonComparisonOptions
+        {
+            NumericStringEqualsNumber = true,
+        });
+
+        Assert.Empty(cmp.Compare(left, right));
     }
 }

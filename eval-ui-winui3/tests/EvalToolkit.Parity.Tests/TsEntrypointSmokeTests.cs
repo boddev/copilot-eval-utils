@@ -15,6 +15,7 @@ namespace EvalToolkit.Parity.Tests;
 /// developers without a Node toolchain aren't blocked. CI gates this
 /// by always building the TS side before running .NET tests.
 /// </summary>
+[Collection("Parity")]
 public class TsEntrypointSmokeTests
 {
     [Fact]

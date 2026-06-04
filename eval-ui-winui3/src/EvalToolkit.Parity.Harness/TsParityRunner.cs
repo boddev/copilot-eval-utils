@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 
 namespace EvalToolkit.Parity.Harness;
@@ -88,6 +87,18 @@ public enum TsParityStatus
 
     /// <summary>Process killed because it exceeded <see cref="ParityRunOptions.Timeout"/>.</summary>
     Timeout,
+
+    /// <summary>
+    /// Process exited successfully (exit 0) but the stdout did not
+    /// conform to the envelope contract — either empty, non-JSON, or
+    /// a JSON value that wasn't an object. The TS entrypoint is
+    /// expected to ALWAYS emit a single-line JSON object on success,
+    /// so this status indicates a broken TS contract. Per GPT-5.5
+    /// round-3 review: surface this explicitly so a regression in the
+    /// TS side doesn't cause silent "Success-with-null-envelope" mass
+    /// false-greens in the parity suite.
+    /// </summary>
+    ProtocolError,
 }
 
 /// <summary>
@@ -153,41 +164,56 @@ public sealed class TsParityRunner
         Stopwatch sw = Stopwatch.StartNew();
         using Process process = new() { StartInfo = psi };
 
-        StringBuilder stdoutBuf = new();
-        StringBuilder stderrBuf = new();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdoutBuf.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrBuf.AppendLine(e.Data); };
-
         if (!process.Start())
         {
             throw new InvalidOperationException(
                 $"Failed to start node process '{_nodeExecutable}'. " +
                 $"Is Node.js on PATH?");
         }
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
 
+        // Per GPT-5.5 round-3 review: prefer ReadToEndAsync over the
+        // event-driven BeginOutputReadLine pattern so output drainage
+        // is guaranteed before we look at ExitCode. We also kill the
+        // process on EITHER timeout OR caller cancellation; the
+        // old code only killed on timeout, which leaked the process
+        // when the caller's CT fired.
         using CancellationTokenSource timeoutCts =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(options.Timeout);
 
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
         bool timedOut = false;
+        bool externallyCancelled = false;
+        string stdout;
+        string stderr;
         try
         {
             await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            stdout = await stdoutTask.ConfigureAwait(false);
+            stderr = await stderrTask.ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // Hit the timeout (not the caller's cancellation).
-            timedOut = true;
+            externallyCancelled = cancellationToken.IsCancellationRequested;
+            timedOut = !externallyCancelled;
             try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
             try { await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false); } catch { /* best effort */ }
+            // Drain whatever buffered output exists. Don't propagate
+            // the inner cancellation — give the caller the partial
+            // capture, then re-throw their cancellation below if they
+            // were the ones who cancelled.
+            stdout = await SafeAwait(stdoutTask).ConfigureAwait(false);
+            stderr = await SafeAwait(stderrTask).ConfigureAwait(false);
+
+            if (externallyCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
         }
 
         sw.Stop();
-
-        string stdout = stdoutBuf.ToString();
-        string stderr = stderrBuf.ToString();
 
         if (timedOut)
         {
@@ -204,18 +230,19 @@ public sealed class TsParityRunner
         int exitCode = process.ExitCode;
         JsonElement? envelope = null;
         string? readerError = null;
+        bool envelopeIsObject = false;
 
         if (stdout.Length > 0)
         {
             // Best-effort parse. The TS entrypoint writes a single
-            // JSON blob with no trailing newline; AppendLine added one
-            // on our side, so trim before parse.
+            // JSON blob (no trailing newline by design).
             string trimmed = stdout.TrimEnd();
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(trimmed);
                 envelope = doc.RootElement.Clone();
-                if (envelope.Value.ValueKind == JsonValueKind.Object &&
+                envelopeIsObject = envelope.Value.ValueKind == JsonValueKind.Object;
+                if (envelopeIsObject &&
                     envelope.Value.TryGetProperty("error", out JsonElement errProp) &&
                     errProp.ValueKind == JsonValueKind.String)
                 {
@@ -228,8 +255,14 @@ public sealed class TsParityRunner
             }
         }
 
+        // Per GPT-5.5 round-3 review: a 0 exit code with a missing /
+        // non-object envelope is a TS-side contract violation, not a
+        // valid Success. Classify as ProtocolError so the suite
+        // surfaces the regression instead of consuming the null
+        // envelope on the C# side and exploding obscurely later.
         TsParityStatus status = exitCode switch
         {
+            0 when !envelopeIsObject => TsParityStatus.ProtocolError,
             0 => TsParityStatus.Success,
             2 => TsParityStatus.BadUsage,
             3 => TsParityStatus.ReaderError,
@@ -246,5 +279,11 @@ public sealed class TsParityRunner
             Envelope = envelope,
             ReaderErrorMessage = readerError,
         };
+    }
+
+    private static async Task<string> SafeAwait(Task<string> task)
+    {
+        try { return await task.ConfigureAwait(false); }
+        catch { return string.Empty; }
     }
 }
