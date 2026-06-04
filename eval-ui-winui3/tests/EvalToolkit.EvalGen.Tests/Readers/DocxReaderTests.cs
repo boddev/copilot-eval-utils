@@ -116,7 +116,13 @@ public class DocxReaderTests : IDisposable
 
         string document =
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
-            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">" +
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"" +
+            " xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"" +
+            " xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\"" +
+            " xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"" +
+            " xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"" +
+            " xmlns:v=\"urn:schemas-microsoft-com:vml\"" +
+            " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
             $"<w:body>{body}<w:sectPr/></w:body>" +
             "</w:document>";
 
@@ -441,5 +447,247 @@ public class DocxReaderTests : IDisposable
         var r = new DocxReader().Read(path);
         Assert.Single(r.Records);
         Assert.Equal("BODY", r.Records[0]["content"]);
+    }
+
+    // ===== Round-1 reviewer fix coverage =====
+    // The following scenarios were verified empirically against
+    // mammoth in `docx-probe/probe2.js` after GPT-5.5's round-1
+    // review flagged the original walker as having two latent bugs:
+    // (B1) nested-paragraph text duplication, (B2) fldSimple display
+    // text leaking through. The scenarios also pin AlternateContent
+    // Choice/Fallback handling, page-break treatment, smartTag /
+    // proofErr transparency, and xml:space preservation.
+
+    [Fact]
+    public void Read_SimpleField_DisplayTextDropped()
+    {
+        // mammoth probe `fldSimple`:
+        //   "before  after\n\n"  (TWO spaces — display "3/15/2023" excluded)
+        // Mammoth.extractRawText skips the cached display value of
+        // <w:fldSimple>. Required for parity on field-heavy docs
+        // (dates, page numbers, TOC entries).
+        string path = BuildDocx("fldSimple.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:fldSimple w:instr=\" DATE \">" +
+                    "<w:r><w:t>3/15/2023</w:t></w:r>" +
+                  "</w:fldSimple>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        // JsCompat.Trim strips outer whitespace but preserves internal
+        // double-space — matches mammoth's "before  after".
+        Assert.Equal("before  after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_ComplexField_DisplayTextKept()
+    {
+        // mammoth probe `fldChar-complex`:
+        //   "before 3/15/2023 after\n\n"
+        // Complex fields wrap their cached display value in plain
+        // <w:r>/<w:t> between <w:fldChar separate/> and
+        // <w:fldChar end/> — no special wrapper. Mammoth (and our
+        // walker, by default) picks up that text just like any other
+        // run text. Pinning here so the fldSimple fix doesn't
+        // accidentally over-apply.
+        string path = BuildDocx("fldChar-complex.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t xml:space=\"preserve\">before </w:t></w:r>" +
+                  "<w:r><w:fldChar w:fldCharType=\"begin\"/></w:r>" +
+                  "<w:r><w:instrText xml:space=\"preserve\"> DATE </w:instrText></w:r>" +
+                  "<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>" +
+                  "<w:r><w:t>3/15/2023</w:t></w:r>" +
+                  "<w:r><w:fldChar w:fldCharType=\"end\"/></w:r>" +
+                  "<w:r><w:t xml:space=\"preserve\"> after</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before 3/15/2023 after", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_TextboxNestedParagraphs_BecomeOwnTopLevelEntries()
+    {
+        // mammoth probe `textbox-simple`:
+        //   "before\n\n\n\ntxbx 1\n\ntxbx 2\n\nafter\n\n"
+        //   → ["before","txbx 1","txbx 2","after"]
+        // Nested <w:p> inside <v:textbox>/<w:txbxContent> surfaces as
+        // its own top-level paragraph in document order. Critical
+        // round-1 fix: the outer paragraph that CONTAINS the textbox
+        // must NOT also concatenate the nested paragraphs' text into
+        // itself (duplication bug). The fix: when concatenating a
+        // paragraph's text, skip any descendant whose nearest
+        // Paragraph ancestor is NOT the paragraph being processed.
+        string path = BuildDocx("textbox-simple.docx",
+            new P { Text = "before" },
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r>" +
+                    "<w:pict>" +
+                      "<v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\">" +
+                        "<v:textbox>" +
+                          "<w:txbxContent>" +
+                            "<w:p><w:r><w:t>txbx 1</w:t></w:r></w:p>" +
+                            "<w:p><w:r><w:t>txbx 2</w:t></w:r></w:p>" +
+                          "</w:txbxContent>" +
+                        "</v:textbox>" +
+                      "</v:shape>" +
+                    "</w:pict>" +
+                  "</w:r>" +
+                "</w:p>" },
+            new P { Text = "after" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("before\ntxbx 1\ntxbx 2\nafter", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_AlternateContent_UsesFallbackBranch()
+    {
+        // mammoth probe `textbox`:
+        //   "outer\n\nfallback inner\n\n"
+        //   → ["outer","fallback inner"]
+        // <mc:AlternateContent> publishes the same content twice —
+        // once via <mc:Choice Requires="..."> for feature-aware
+        // consumers, once via <mc:Fallback> for everyone else.
+        // Mammoth uses the Fallback branch (and so does Word's
+        // "Save As Plain Text" feature). We mirror by filtering out
+        // any paragraph or descendant whose ancestor chain contains
+        // AlternateContentChoice.
+        string path = BuildDocx("altcontent.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:r><w:t>outer</w:t></w:r>" +
+                  "<w:r>" +
+                    "<mc:AlternateContent>" +
+                      "<mc:Choice Requires=\"wps\">" +
+                        "<w:drawing>" +
+                          "<wp:inline xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\">" +
+                            "<a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">" +
+                              "<a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\">" +
+                                "<wps:wsp xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\">" +
+                                  "<wps:txbx>" +
+                                    "<w:txbxContent>" +
+                                      "<w:p><w:r><w:t>choice inner</w:t></w:r></w:p>" +
+                                    "</w:txbxContent>" +
+                                  "</wps:txbx>" +
+                                "</wps:wsp>" +
+                              "</a:graphicData>" +
+                            "</a:graphic>" +
+                          "</wp:inline>" +
+                        "</w:drawing>" +
+                      "</mc:Choice>" +
+                      "<mc:Fallback>" +
+                        "<w:pict>" +
+                          "<v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\">" +
+                            "<v:textbox>" +
+                              "<w:txbxContent>" +
+                                "<w:p><w:r><w:t>fallback inner</w:t></w:r></w:p>" +
+                              "</w:txbxContent>" +
+                            "</v:textbox>" +
+                          "</v:shape>" +
+                        "</w:pict>" +
+                      "</mc:Fallback>" +
+                    "</mc:AlternateContent>" +
+                  "</w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        // "outer" from the outermost paragraph + "fallback inner" from
+        // the Fallback's nested paragraph. "choice inner" must NOT
+        // appear (it's behind <mc:Choice>).
+        Assert.Equal("outer\nfallback inner", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_PageBreak_AlsoSilentlyDropped()
+    {
+        // mammoth probe `page-break`:
+        //   "beforeafter\n\n"
+        // <w:br w:type="page"/> is silently dropped exactly like a
+        // plain <w:br/>. Confirms our Break-ignoring switch case
+        // applies to both flavors (no need to special-case Type).
+        string path = BuildDocx("page-break.docx",
+            new P { Runs = new[] {
+                new Run { Text = "before" },
+                new Run { Tag = "<w:br w:type=\"page\"/>" },
+                new Run { Text = "after" },
+            }});
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("beforeafter", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_SmartTag_IsTransparentWrapper()
+    {
+        // mammoth probe `smartTag`:
+        //   "tagged rest\n\n"
+        // <w:smartTag> wraps runs without adding/removing text.
+        string path = BuildDocx("smarttag.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:smartTag w:uri=\"urn:foo\" w:element=\"bar\">" +
+                    "<w:r><w:t>tagged</w:t></w:r>" +
+                  "</w:smartTag>" +
+                  "<w:r><w:t xml:space=\"preserve\"> rest</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("tagged rest", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_ProofErr_IsTransparentMarker()
+    {
+        // mammoth probe `proofErr`:
+        //   "typox rest\n\n"
+        // <w:proofErr> is a paragraph-level marker for spell/grammar
+        // squigglies — it should be invisible to text extraction.
+        string path = BuildDocx("prooferr.docx",
+            new P { RawXml =
+                "<w:p>" +
+                  "<w:proofErr w:type=\"spellStart\"/>" +
+                  "<w:r><w:t>typox</w:t></w:r>" +
+                  "<w:proofErr w:type=\"spellEnd\"/>" +
+                  "<w:r><w:t xml:space=\"preserve\"> rest</w:t></w:r>" +
+                "</w:p>" });
+
+        var r = new DocxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("typox rest", r.Records[0]["content"]);
+    }
+
+    [Fact]
+    public void Read_XmlSpacePreserveAndDefault_BothPreserveInternalWhitespace()
+    {
+        // mammoth probes `xmlspace-default` and `xmlspace-preserve`
+        // both produced raw "  leading  \n\n" — meaning the OpenXml
+        // text node's effective value is identical whether or not
+        // xml:space="preserve" is present. JsCompat.Trim strips the
+        // outer whitespace identically in both cases.
+        string defaultPath = BuildDocx("xmlspace-default.docx",
+            new P { RawXml =
+                "<w:p><w:r><w:t>  leading  </w:t></w:r></w:p>" });
+        string preservePath = BuildDocx("xmlspace-preserve.docx",
+            new P { RawXml =
+                "<w:p><w:r><w:t xml:space=\"preserve\">  leading  </w:t></w:r></w:p>" });
+
+        var rDefault = new DocxReader().Read(defaultPath);
+        var rPreserve = new DocxReader().Read(preservePath);
+        Assert.Single(rDefault.Records);
+        Assert.Single(rPreserve.Records);
+        Assert.Equal("leading", rDefault.Records[0]["content"]);
+        Assert.Equal("leading", rPreserve.Records[0]["content"]);
     }
 }

@@ -106,10 +106,27 @@ public sealed class DocxReader : IDatasetReader
         if (body is not null)
         {
             // Descendants<Paragraph>() yields paragraphs in document
-            // order, including those nested inside tables, sdt, etc.
-            // Matches mammoth's tree walk exactly for parity probes.
+            // order, including those nested inside tables, sdt,
+            // hyperlink wrappers, <w:txbxContent> text boxes, and the
+            // Fallback branch of <mc:AlternateContent>. Matches
+            // mammoth's tree walk exactly — verified empirically
+            // against scenarios `table`, `sdt`, `hyperlink`,
+            // `textbox`, `textbox-simple`.
             foreach (Paragraph p in body.Descendants<Paragraph>())
             {
+                // Skip the Choice branch of <mc:AlternateContent>:
+                // mammoth processes the Fallback branch instead
+                // (verified probe `textbox`). OpenXml SDK does NOT
+                // resolve AlternateContent by default — it exposes
+                // both branches in the tree — so we filter the Choice
+                // branch out manually here. (We do NOT use the SDK's
+                // MarkupCompatibilityProcessSettings to do this at
+                // open time because that would also strip post-2007
+                // features from non-AlternateContent contexts.)
+                if (p.Ancestors<AlternateContentChoice>().Any())
+                {
+                    continue;
+                }
                 string text = ConcatParagraphText(p);
                 string trimmed = JsCompat.Trim(text);
                 if (trimmed.Length == 0)
@@ -139,30 +156,120 @@ public sealed class DocxReader : IDatasetReader
     /// <see cref="Text"/> value, append <c>\t</c> for every
     /// <see cref="TabChar"/>, ignore everything else (notably
     /// <see cref="Break"/> — see class doc for the rationale).
+    ///
+    /// <para><b>Three subtle exclusions, all empirically verified
+    /// against mammoth probes</b> (artifacts in session-state
+    /// <c>docx-probe/probe2.js</c>):</para>
+    /// <list type="number">
+    ///   <item><b>Nested paragraphs.</b> A paragraph nested inside the
+    ///     current one (typically via <c>&lt;w:txbxContent&gt;</c>
+    ///     text boxes, or via the Fallback branch of
+    ///     <c>&lt;mc:AlternateContent&gt;</c>) is yielded as its OWN
+    ///     top-level entry by <c>Body.Descendants&lt;Paragraph&gt;()</c>
+    ///     and handled in that loop. To avoid emitting its text
+    ///     twice (once flattened into the outer paragraph and again
+    ///     as its own paragraph), we skip any element whose nearest
+    ///     Paragraph ancestor is NOT the current <c>p</c>. Verified
+    ///     probe <c>textbox-simple</c>:
+    ///     <c>["before","txbx 1","txbx 2","after"]</c>.</item>
+    ///   <item><b>Simple field display text.</b>
+    ///     <c>&lt;w:fldSimple&gt;</c> wraps the cached display value
+    ///     of a Word field (DATE, PAGE, TOC, etc.). Mammoth DROPS
+    ///     that display text in <c>extractRawText</c>. Probe
+    ///     <c>fldSimple</c> with display <c>"3/15/2023"</c> in
+    ///     <c>"before "</c> + field + <c>" after"</c> →
+    ///     <c>"before  after"</c> (two spaces; field text excluded).
+    ///     Note this is ASYMMETRIC vs <c>&lt;w:fldChar&gt;</c>-style
+    ///     <i>complex</i> fields: those DO emit their display text
+    ///     (probe <c>fldChar-complex</c>:
+    ///     <c>"before 3/15/2023 after"</c>). The difference: complex
+    ///     field display text lives in a plain
+    ///     <c>&lt;w:r&gt;/&lt;w:t&gt;</c> between
+    ///     <c>&lt;w:fldChar separate&gt;</c> and
+    ///     <c>&lt;w:fldChar end&gt;</c> — no special wrapper element
+    ///     — so the default walker picks it up correctly without
+    ///     extra logic. Only <c>SimpleField</c> needs an explicit
+    ///     skip.</item>
+    ///   <item><b>AlternateContent Choice.</b>
+    ///     <c>&lt;mc:AlternateContent&gt;</c> publishes the same
+    ///     content in two forms: a Choice for feature-aware consumers
+    ///     and a Fallback for everyone else. Mammoth uses Fallback
+    ///     (verified probe <c>textbox</c>:
+    ///     <c>["outer","fallback inner"]</c>, NOT <c>["outer",
+    ///     "inner"]</c>). The body-level loop already filters Choice
+    ///     paragraphs; this guard catches any Choice content nested
+    ///     inside a paragraph at run level.</item>
+    /// </list>
     /// </summary>
     private static string ConcatParagraphText(Paragraph p)
     {
         var sb = new System.Text.StringBuilder();
         foreach (OpenXmlElement el in p.Descendants())
         {
+            if (!ReferenceEquals(el.Ancestors<Paragraph>().FirstOrDefault(), p))
+            {
+                continue;
+            }
+            if (el.Ancestors<SimpleField>().Any())
+            {
+                continue;
+            }
+            if (el.Ancestors<AlternateContentChoice>().Any())
+            {
+                continue;
+            }
             switch (el)
             {
                 case Text t:
-                    // <w:t xml:space="preserve"> content. xml:space is
-                    // handled by the OpenXml SDK; t.Text reflects the
-                    // preserved characters.
+                    // <w:t> content (xml:space="preserve" or default —
+                    // OpenXml SDK's Text.Text preserves either way,
+                    // verified probes xmlspace-default and
+                    // xmlspace-preserve both yield "  leading  ").
                     sb.Append(t.Text);
                     break;
                 case TabChar:
                     sb.Append('\t');
                     break;
-                // Break, FieldChar, FootnoteReference, EndnoteReference,
-                // CommentReference, etc. are intentionally ignored to
-                // match mammoth.extractRawText.
+                case OpenXmlUnknownElement u
+                    when u.NamespaceUri == WordprocessingNamespace:
+                    // <w:smartTag>, custom-XML inserts, and any other
+                    // wrapper the OpenXml SDK does not know about
+                    // (e.g. third-party extensions) are parsed as
+                    // OpenXmlUnknownElement — AND their descendants
+                    // are too. That means typed `case Text t` above
+                    // misses <w:t> nodes underneath them. To preserve
+                    // mammoth's transparent-wrapper behavior (verified
+                    // probe `smartTag`: "tagged rest"), pick up the
+                    // text/tab content from unknown <w:t>/<w:tab>
+                    // descendants explicitly. We skip leaf unknowns
+                    // here only when their *parent* in the unknown
+                    // subtree is itself unknown; the outermost
+                    // unknown wrapper's contribution is what counts.
+                    // The simpler safe rule: when an unknown <w:t>
+                    // or <w:tab> appears AND none of its known-typed
+                    // ancestors handled it (which is always true
+                    // since they're unknown), append it here.
+                    switch (u.LocalName)
+                    {
+                        case "t":
+                            sb.Append(u.InnerText);
+                            break;
+                        case "tab":
+                            sb.Append('\t');
+                            break;
+                    }
+                    break;
+                // Break (both plain w:br and w:br type="page"),
+                // FieldChar, FootnoteReference, EndnoteReference,
+                // CommentReference, FieldCode (w:instrText) etc. are
+                // intentionally ignored to match mammoth.extractRawText.
             }
         }
         return sb.ToString();
     }
+
+    private const string WordprocessingNamespace =
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
     /// <summary>
     /// Marker constant referenced by the class xmldoc — keeps the doc
@@ -170,5 +277,7 @@ public sealed class DocxReader : IDatasetReader
     /// divergences registry in the future.
     /// </summary>
     internal const string ReadDocxKnownDivergences =
-        "br=dropped; headers/footers=ignored; comments/footnotes/endnotes=ignored";
+        "br=dropped (including type=page); fldSimple display=dropped (fldChar complex=kept); " +
+        "AlternateContent Choice=dropped (Fallback=used); " +
+        "headers/footers=ignored; comments/footnotes/endnotes=ignored";
 }
