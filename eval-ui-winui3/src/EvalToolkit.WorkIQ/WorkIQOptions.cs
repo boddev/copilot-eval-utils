@@ -90,6 +90,13 @@ public sealed class A2AWorkIQClientOptions
 
     public IA2ATokenProvider? TokenProvider { get; init; }
 
+    /// <summary>
+    /// Optional interactive auth broker for the MSAL auth mode.
+    /// The WinUI shell injects a WAM-backed implementation; CLI hosts
+    /// leave this null and let device-code take over.
+    /// </summary>
+    public IInteractiveAuthBroker? InteractiveAuthBroker { get; init; }
+
     public HttpClient? HttpClient { get; init; }
 
     public int? TimeoutMs { get; init; }

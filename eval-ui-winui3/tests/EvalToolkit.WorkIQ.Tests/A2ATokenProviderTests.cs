@@ -37,10 +37,21 @@ public class A2ATokenProviderTests
     }
 
     [Fact]
-    public void Factory_SelectsMsalPlaceholderWhenRequestedAndNoEarlierProviderExists()
+    public void Factory_SelectsMsalProviderWhenRequestedAndNoEarlierProviderExists()
     {
-        IA2ATokenProvider provider = A2ATokenProviderFactory.Create(null, null, "msal");
-        Assert.IsType<MsalA2ATokenProvider>(provider);
+        var config = new MsalA2ATokenProviderConfig(
+            ClientId: "11111111-1111-1111-1111-111111111111",
+            TenantId: "22222222-2222-2222-2222-222222222222",
+            Scopes: new[] { "https://example.invalid/.default" },
+            CachePath: Path.Combine(Path.GetTempPath(), "auth-port-test-cache.json"),
+            AllowDeviceCode: false);
+        IA2ATokenProvider provider = A2ATokenProviderFactory.Create(
+            accessToken: null,
+            tokenCommand: null,
+            authMode: "msal",
+            msalConfig: config,
+            msalBroker: null);
+        Assert.IsType<LazyMsalA2ATokenProvider>(provider);
     }
 
     [Fact]
@@ -59,11 +70,12 @@ public class A2ATokenProviderTests
     }
 
     [Fact]
-    public async Task MsalPlaceholder_ThrowsAuthPortTodoMessage()
+    public async Task MsalProvider_WithoutConfig_ThrowsArgumentException()
     {
-        var provider = new MsalA2ATokenProvider();
-        NotSupportedException exception = await Assert.ThrowsAsync<NotSupportedException>(async () =>
-            await provider.GetTokenAsync(cancellationToken: CancellationToken.None));
-        Assert.Contains("auth-port", exception.Message, StringComparison.Ordinal);
+        // Verifies the placeholder NotSupportedException was replaced
+        // with proper config validation. The auth-port slice swapped
+        // the throw-stub for a real PCA-backed implementation.
+        Assert.Throws<ArgumentNullException>(() => new MsalA2ATokenProvider(config: null!));
+        await Task.CompletedTask;
     }
 }

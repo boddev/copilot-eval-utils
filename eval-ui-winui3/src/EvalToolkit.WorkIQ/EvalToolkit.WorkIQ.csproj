@@ -6,6 +6,12 @@
 
   <ItemGroup>
     <PackageReference Include="Polly" />
+    <PackageReference Include="Microsoft.Identity.Client" />
+    <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EvalToolkit.WorkIQ.Tests" />
   </ItemGroup>
 
   <PropertyGroup>

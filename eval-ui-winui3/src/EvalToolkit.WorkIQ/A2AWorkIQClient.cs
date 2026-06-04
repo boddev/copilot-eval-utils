@@ -19,6 +19,7 @@ public sealed class A2AWorkIQClient : IWorkIQClient
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
     private readonly IA2ATokenProvider _tokenProvider;
+    private readonly bool _hasExplicitTokenProvider;
     private readonly WorkIQRetryOptions _retryOptions;
     private readonly int _timeoutMs;
     private readonly Dictionary<string, string> _resolvedAgentUrls = [];
@@ -41,7 +42,22 @@ public sealed class A2AWorkIQClient : IWorkIQClient
                 EnvVars.WorkIqA2aAuthMode,
                 EnvVars.EvalScoreA2aAuth,
                 EnvVars.WorkIqA2aAuth));
-        _tokenProvider = A2ATokenProviderFactory.Create(accessToken, tokenCommand, _authMode, options.TokenProvider);
+        // Per Opus-4.8 plan-stage review (M4): preserve whether the
+        // caller injected a token provider explicitly. Once
+        // A2ATokenProviderFactory wraps the env config into a real
+        // MsalA2ATokenProvider we cannot distinguish "explicit
+        // injection" from "factory auto-built msal mode" by type
+        // alone, so msal config validation would either always-fire
+        // or always-skip. Storing the flag at construction preserves
+        // the TS validateConfig() branch behavior.
+        _hasExplicitTokenProvider = options.TokenProvider is not null;
+        _tokenProvider = A2ATokenProviderFactory.Create(
+            accessToken,
+            tokenCommand,
+            _authMode,
+            msalConfig: null,
+            msalBroker: options.InteractiveAuthBroker,
+            options.TokenProvider);
         _httpClient = options.HttpClient ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _ownsHttpClient = options.HttpClient is null;
         _timeoutMs = options.TimeoutMs ?? WorkIQOptionsDefaults.ParseTimeoutMs();
@@ -107,10 +123,41 @@ public sealed class A2AWorkIQClient : IWorkIQClient
         {
             throw new WorkIQException("M365 agent ID targeting requires WORK_IQ_A2A_ENDPOINT.");
         }
+        // Per Opus-4.8 plan-stage review (M4): the TS validateConfig
+        // path for msal mode is "if (this.authMode === 'msal') { if
+        // (!this.tokenProvider) validateMsalConfig(); return; }" — an
+        // explicitly-injected provider skips validation and the msal
+        // branch *returns* unconditionally (does NOT fall through to
+        // the access-token-required check). Mirror that exactly.
+        if (_authMode == "msal")
+        {
+            if (!_hasExplicitTokenProvider)
+            {
+                ValidateMsalConfig();
+            }
+            return;
+        }
         if (_tokenProvider is NoopA2ATokenProvider)
         {
             throw new WorkIQException(
                 "M365 agent ID targeting requires WORK_IQ_A2A_ACCESS_TOKEN, WORK_IQ_A2A_TOKEN_COMMAND, or EVALSCORE_A2A_AUTH_MODE=msal.");
+        }
+    }
+
+    /// <summary>
+    /// Mirror TS <c>validateMsalConfig()</c>: enumerate missing
+    /// fields and throw the same wire-string error so operator-
+    /// facing messages survive the port verbatim.
+    /// </summary>
+    private void ValidateMsalConfig()
+    {
+        MsalA2ATokenProviderConfig config = MsalA2ATokenProviderConfig.FromEnvironment(_tenantId);
+        IReadOnlyList<string> missing = config.GetMissingFields();
+        if (missing.Count > 0)
+        {
+            throw new WorkIQException(
+                $"MSAL A2A auth requires {string.Join(", ", missing)}. " +
+                "Set EVALSCORE_A2A_CLIENT_ID, EVALSCORE_A2A_TENANT_ID or --tenant-id, and EVALSCORE_A2A_SCOPES.");
         }
     }
 

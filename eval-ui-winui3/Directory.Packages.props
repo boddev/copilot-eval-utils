@@ -105,6 +105,23 @@
          kept here so package references can use either id. -->
     <PackageVersion Include="PdfPig" Version="0.1.14" />
 
+    <!--
+      auth-port slice — real MSAL for the WorkIQ A2A token provider
+      (replaces the placeholder in EvalToolkit.WorkIQ/A2ATokenProviders.cs).
+      Mirrors MsalA2ATokenProvider in eval-score/node/src/workiq-client.ts
+      (msal-node v3.x there).
+        - Microsoft.Identity.Client           — PCA, silent flow, device-code flow
+        - Microsoft.Identity.Client.Extensions.Msal — MsalCacheHelper for the
+            DPAPI-protected on-disk token cache on Windows (libsecret on
+            Linux, Keychain on macOS — not used by the WinUI head but kept
+            cross-platform for the parity harness and CLI shims).
+      Microsoft.Identity.Client.Broker (WAM/interactive broker) is DEFERRED
+      to the winui-shell slice because it pulls in Windows-only runtime
+      dependencies; the provider exposes an `interactiveAcquireOverride`
+      delegate seam that winui-shell will wire up to WAM later.
+    -->
+    <PackageVersion Include="Microsoft.Identity.Client" Version="4.84.1" />
+    <PackageVersion Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.84.1" />
 
   </ItemGroup>
 </Project>

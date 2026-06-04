@@ -115,16 +115,49 @@ public sealed class TokenCommandA2ATokenProvider : IA2ATokenProvider
 }
 
 /// <summary>
-/// Placeholder for the auth-port todo. The MSAL/WAM implementation will
-/// replace this class when <c>auth-port</c> lands; this port only defines
-/// the provider seam and preserves selection order.
+/// Lazy wrapper around an <see cref="MsalA2ATokenProvider"/>: defers
+/// construction (and config validation) to the first token request.
+///
+/// <para>The factory needs this to mirror the TS contract: MSAL
+/// config errors surface at <c>validateConfig()</c> / <c>start()</c>
+/// time, not at factory time. Eagerly constructing
+/// <see cref="MsalA2ATokenProvider"/> in the factory would throw
+/// <see cref="ArgumentException"/> on incomplete configs, swallowing
+/// the operator-friendly "MSAL A2A auth requires …" message that
+/// <see cref="A2AWorkIQClient.ValidateConfig"/> raises.</para>
+///
+/// <para>For direct callers (tests, programmatic users) who instantiate
+/// <see cref="MsalA2ATokenProvider"/> directly with a partially-built
+/// config, the constructor still throws — that path is defensive.
+/// This wrapper exists for the factory chain alone.</para>
 /// </summary>
-public sealed class MsalA2ATokenProvider : IA2ATokenProvider
+public sealed class LazyMsalA2ATokenProvider : IA2ATokenProvider
 {
+    private readonly Func<IA2ATokenProvider> _factory;
+    private readonly Lock _gate = new();
+    private IA2ATokenProvider? _inner;
+
+    public LazyMsalA2ATokenProvider(Func<IA2ATokenProvider> factory)
+    {
+        _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+    }
+
     public Task<string> GetTokenAsync(bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
-        throw new NotSupportedException(
-            "MSAL A2A auth is implemented by the auth-port todo. Configure WORK_IQ_A2A_ACCESS_TOKEN or WORK_IQ_A2A_TOKEN_COMMAND for now.");
+        IA2ATokenProvider inner;
+        if (_inner is not null)
+        {
+            inner = _inner;
+        }
+        else
+        {
+            lock (_gate)
+            {
+                _inner ??= _factory();
+                inner = _inner;
+            }
+        }
+        return inner.GetTokenAsync(forceRefresh, cancellationToken);
     }
 }
 
@@ -135,6 +168,31 @@ public static class A2ATokenProviderFactory
         string? accessToken,
         string? tokenCommand,
         string? authMode,
+        IA2ATokenProvider? explicitProvider = null)
+    {
+        return Create(accessToken, tokenCommand, authMode, msalConfig: null, msalBroker: null, explicitProvider);
+    }
+
+    /// <summary>
+    /// Build a token provider with optional MSAL configuration and
+    /// interactive-broker overrides. Selection order matches TS
+    /// exactly: explicit provider → static token → token command →
+    /// MSAL (when mode is "msal") → noop.
+    /// </summary>
+    /// <param name="msalConfig">
+    /// Pre-built MSAL config. When null and the auth mode is "msal",
+    /// the config is sourced from environment variables via
+    /// <see cref="MsalA2ATokenProviderConfig.FromEnvironment(string?)"/>.
+    /// </param>
+    /// <param name="msalBroker">
+    /// Optional interactive broker (WinUI shell injects WAM).
+    /// </param>
+    public static IA2ATokenProvider Create(
+        string? accessToken,
+        string? tokenCommand,
+        string? authMode,
+        MsalA2ATokenProviderConfig? msalConfig,
+        IInteractiveAuthBroker? msalBroker,
         IA2ATokenProvider? explicitProvider = null)
     {
         if (explicitProvider is not null)
@@ -155,7 +213,20 @@ public static class A2ATokenProviderFactory
         string normalized = NormalizeAuthMode(authMode);
         if (normalized == "msal")
         {
-            return new MsalA2ATokenProvider();
+            // Per TS contract: MSAL config errors surface at
+            // validateConfig() / start() time, NOT at factory time.
+            // The factory must not eagerly throw on missing fields,
+            // because A2AWorkIQClient.ValidateConfig is what produces
+            // the operator-facing missing-fields message. Wrap in a
+            // lazy provider so config building happens at first token
+            // request — by which point either ValidateConfig already
+            // gated the call OR the operator deliberately constructed
+            // an unvalidated client.
+            return new LazyMsalA2ATokenProvider(() =>
+            {
+                MsalA2ATokenProviderConfig effective = msalConfig ?? MsalA2ATokenProviderConfig.FromEnvironment();
+                return new MsalA2ATokenProvider(effective, msalBroker);
+            });
         }
 
         return new NoopA2ATokenProvider();
