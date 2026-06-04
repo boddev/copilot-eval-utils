@@ -94,8 +94,9 @@ namespace EvalToolkit.EvalGen.Readers;
 ///     survives a <c>[null, "  ", "real content"]</c> list.</item>
 ///   <item><b>Title and body texts are emitted UNTRIMMED.</b> Only the
 ///     filtering predicate (<c>text.Trim().Length &gt; 0</c>) is
-///     trimmed; the recorded text is the raw concatenation of run
-///     contents. The TS reader uses
+///     trimmed via <see cref="JsCompat.Trim"/> (NOT .NET
+///     <see cref="string.Trim()"/>) — the recorded text is the raw
+///     concatenation of run contents. The TS reader uses
 ///     <c>parseTagValue: false, trimValues: false</c> on the parser
 ///     for this reason. This is important when the slide author has
 ///     intentional leading/trailing whitespace.</item>
@@ -473,7 +474,7 @@ public sealed class PptxReader : IDatasetReader
         if (local == "p")
         {
             string text = CollectTextLeaves(node, leafLocalName: "t");
-            if (text.Trim().Length > 0)
+            if (JsCompat.Trim(text).Length > 0)
             {
                 entries.Add(new PptxParagraphEntry(text, false));
             }
@@ -497,7 +498,7 @@ public sealed class PptxReader : IDatasetReader
         foreach (var p in shape.Descendants().Where(e => e.Name.LocalName == "p"))
         {
             string text = CollectTextLeaves(p, leafLocalName: "t");
-            if (text.Trim().Length > 0)
+            if (JsCompat.Trim(text).Length > 0)
             {
                 paragraphs.Add(text);
             }
@@ -623,7 +624,7 @@ public sealed class PptxReader : IDatasetReader
         foreach (var p in doc.Root.DescendantsAndSelf().Where(e => e.Name.LocalName == "p"))
         {
             string text = CollectTextLeaves(p, leafLocalName: "t");
-            if (text.Trim().Length > 0)
+            if (JsCompat.Trim(text).Length > 0)
             {
                 paragraphs.Add(text);
             }
@@ -663,11 +664,18 @@ public sealed class PptxReader : IDatasetReader
     /// </summary>
     internal static bool ParseBoolEnv(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw))
+        // Mirror TS `if (!value) return false;` — JS `!value` is true ONLY for
+        // null/undefined/empty-string, NOT for whitespace-only strings.
+        // .NET `string.IsNullOrWhiteSpace` would over-reject here because
+        // .NET classifies U+0085 (NEL) as whitespace while ECMAScript does
+        // not — using `IsNullOrEmpty` preserves JS truthiness semantics.
+        if (string.IsNullOrEmpty(raw))
         {
             return false;
         }
-        return raw.Trim().ToLowerInvariant() switch
+        // Use JsCompat.Trim so whitespace classification matches TS exactly
+        // (e.g. trims U+FEFF / does NOT trim U+0085).
+        return JsCompat.Trim(raw).ToLowerInvariant() switch
         {
             "true" or "1" or "yes" or "on" => true,
             _ => false,

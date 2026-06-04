@@ -459,6 +459,85 @@ public class PptxReaderTests : IDisposable
     }
 
     /// <summary>
+    /// Probe <c>trim/feff-only</c>: a paragraph whose only content is
+    /// U+FEFF (ZWNBSP/BOM) is DROPPED by the filter because JS
+    /// <c>String.prototype.trim</c> treats U+FEFF as whitespace.
+    /// .NET <see cref="string.Trim()"/> does NOT — using it here
+    /// would silently KEEP the paragraph and diverge from TS. The
+    /// filter must use <see cref="JsCompat.Trim"/>. Authoritative
+    /// ground truth at <c>~/.copilot/session-state/.../pptx-probe/trim-probe-results.json</c>
+    /// shows <c>content=""</c> (no codepoints) for this scenario.
+    /// </summary>
+    [Fact]
+    public void Read_FeffOnlyParagraph_IsDroppedByJsCompatTrim()
+    {
+        string path = BuildPptx("trim-feff-only.pptx",
+            new Sl { Shapes = new[]
+            {
+                new Sp { Ph = "title", Paras = new[] { "marker" } },
+                new Sp { Paras = new[] { "\uFEFF" } },
+            }});
+
+        var r = new PptxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("marker", r.Records[0]["title"]);
+        Assert.Equal(string.Empty, r.Records[0]["content"]);
+    }
+
+    /// <summary>
+    /// Probe <c>trim/nel-only</c>: a paragraph whose only content is
+    /// U+0085 (NEL) is KEPT by the filter because JS
+    /// <c>String.prototype.trim</c> does NOT treat U+0085 as
+    /// whitespace. .NET <see cref="string.Trim()"/> DOES — using it
+    /// here would silently DROP the paragraph and diverge from TS.
+    /// The filter must use <see cref="JsCompat.Trim"/>. Authoritative
+    /// ground truth at <c>~/.copilot/session-state/.../pptx-probe/trim-probe-results.json</c>
+    /// shows <c>content="\u0085"</c> for this scenario.
+    /// </summary>
+    [Fact]
+    public void Read_NelOnlyParagraph_IsKeptByJsCompatTrim()
+    {
+        string path = BuildPptx("trim-nel-only.pptx",
+            new Sl { Shapes = new[]
+            {
+                new Sp { Ph = "title", Paras = new[] { "marker" } },
+                new Sp { Paras = new[] { "\u0085" } },
+            }});
+
+        var r = new PptxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("marker", r.Records[0]["title"]);
+        Assert.Equal("\u0085", r.Records[0]["content"]);
+    }
+
+    /// <summary>
+    /// Probe <c>trim/feff-then-text</c> and <c>trim/nel-then-text</c>:
+    /// when a paragraph contains non-whitespace text, the filter
+    /// trivially passes regardless of trim-whitespace classification.
+    /// Critically, the RECORDED text is UNTRIMMED — leading U+FEFF
+    /// and U+0085 codepoints survive into the emitted
+    /// <c>content</c> field exactly as authored. Pins the TS
+    /// invariant that only the filter predicate uses trim; the
+    /// captured text comes straight from
+    /// <see cref="CollectTextLeaves"/>.
+    /// </summary>
+    [Fact]
+    public void Read_LeadingSpecialWhitespace_IsPreservedInContent()
+    {
+        string path = BuildPptx("trim-leading-specials.pptx",
+            new Sl { Shapes = new[]
+            {
+                new Sp { Ph = "title", Paras = new[] { "marker" } },
+                new Sp { Paras = new[] { "\uFEFFhello", "\u0085world" } },
+            }});
+
+        var r = new PptxReader().Read(path);
+        Assert.Single(r.Records);
+        Assert.Equal("marker", r.Records[0]["title"]);
+        Assert.Equal("\uFEFFhello\n\u0085world", r.Records[0]["content"]);
+    }
+
+    /// <summary>
     /// Probe <c>grouped-shape</c>: <c>&lt;p:grpSp&gt;</c> is walked
     /// transparently and its child <c>&lt;p:sp&gt;</c> elements
     /// contribute paragraphs. Outer title shape supplies the title;
@@ -754,6 +833,16 @@ public class PptxReaderTests : IDisposable
     [InlineData("", false)]
     [InlineData(" ", false)]
     [InlineData(null, false)]
+    // JsCompat parity edge cases — pin behavior against TS `parseBoolEnv`:
+    //   * U+FEFF (BOM): JS trim strips; .NET Trim does NOT.
+    //   * U+0085 (NEL): JS trim does NOT strip; .NET Trim does.
+    // Authoritative source: regex `/^(true|1|yes|on)$/i.test(value.trim())`
+    // in eval-gen/src/readers/index.ts::parseBoolEnv.
+    [InlineData("\u0085",      false)] // NEL-only: !value false, trim preserves NEL → no match → false
+    [InlineData("\uFEFF",      false)] // BOM-only: trim strips to "" → no match → false
+    [InlineData("\u0085true",  false)] // NEL prefix: JS trim preserves → "\u0085true" → no match
+    [InlineData("\uFEFFtrue",  true)]  // BOM prefix: JS trim strips → "true" → match
+    [InlineData("\uFEFF1",     true)]  // BOM prefix + "1"
     public void ParseBoolEnv_Matches(string? raw, bool expected)
     {
         Assert.Equal(expected, PptxReader.ParseBoolEnv(raw));
