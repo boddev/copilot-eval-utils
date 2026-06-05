@@ -1,4 +1,5 @@
 using EvalToolkit.UI.Services;
+using EvalToolkit.UI.ViewModels;
 using EvalToolkit.UI.Views;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -20,6 +21,7 @@ public partial class App : Application
     public ThemeService Theme { get; private set; } = null!;
     public IFileDialogService FileDialog { get; private set; } = null!;
     public IEvalGenJobService JobService { get; private set; } = null!;
+    public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
     // Nullable because OnReactivation can fire on a background thread
@@ -48,15 +50,29 @@ public partial class App : Application
 
         // Slice 23: workspace root + job service. Default workspace lives
         // under %LOCALAPPDATA%\EvalToolkit\workspace; slice 24 (jobs sidebar)
-        // can swap to an imported workspace via a first-run wizard.
+        // can swap to an imported workspace via a first-run wizard. Note:
+        // DefaultWorkspaceRoot is now side-effect-free (slice 24 GPT-5.5
+        // finding #8) — the directory is created lazily on first job.
         WorkspaceRoot = EvalGenJobService.DefaultWorkspaceRoot();
-        JobService = new EvalGenJobService();
+        var jobService = new EvalGenJobService();
+        JobService = jobService;
 
-        // Slice 22 starts on the dataset-picker wizard. Slice 26
-        // (jobs sidebar) replaces this with a job-list landing page
-        // that opens the wizard via "New evaluation".
-        Navigation.Register("Wizard", typeof(Views.WizardView));
-        Navigation.NavigateTo(typeof(Views.WizardView));
+        // Slice 24: shell + jobs sidebar. MainShellViewModel owns the
+        // long-lived sidebar VM (so its job list survives navigation),
+        // and subscribes to the job service's JobStateChanged event for
+        // auto-refresh on both start and terminal states.
+        var sidebar = new JobsSidebarViewModel(
+            new EvalToolkit.Jobs.JobsRepository(),
+            WorkspaceRoot,
+            jobService,
+            UiDispatcher);
+        MainShell = new MainShellViewModel(sidebar);
+
+        // Slice 22 starts on the dataset-picker wizard. Slice 24 wraps
+        // the wizard in a MainShell page that hosts a jobs sidebar to
+        // the left. Routes are re-registered against MainShell's
+        // inner Frame by MainShell.OnLoaded.
+        Navigation.NavigateTo(typeof(Views.MainShell));
         ShellWindow.Activate();
 
         // Drain any activations that arrived between Program.Main

@@ -14,10 +14,22 @@ namespace EvalToolkit.UI.Services;
 /// </summary>
 public sealed class NavigationService
 {
-    private readonly Frame _frame;
+    private Frame _frame;
     private readonly Dictionary<string, Type> _routes = new(StringComparer.Ordinal);
 
     public NavigationService(Frame frame)
+    {
+        _frame = frame ?? throw new ArgumentNullException(nameof(frame));
+    }
+
+    /// <summary>
+    /// Re-target the service onto a new <see cref="Frame"/>. Used by
+    /// <see cref="Views.MainShell"/> so the wizard lives inside the
+    /// shell's content frame rather than the bare ShellWindow root —
+    /// without forcing every existing call site to re-resolve the
+    /// service. Registered routes are preserved.
+    /// </summary>
+    public void Rebind(Frame frame)
     {
         _frame = frame ?? throw new ArgumentNullException(nameof(frame));
     }

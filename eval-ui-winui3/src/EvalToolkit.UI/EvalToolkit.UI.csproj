@@ -66,6 +66,7 @@
     <ProjectReference Include="..\EvalToolkit.Core\EvalToolkit.Core.csproj" />
     <ProjectReference Include="..\EvalToolkit.EvalGen\EvalToolkit.EvalGen.csproj" />
     <ProjectReference Include="..\EvalToolkit.EvalScore\EvalToolkit.EvalScore.csproj" />
+    <ProjectReference Include="..\EvalToolkit.Jobs\EvalToolkit.Jobs.csproj" />
     <ProjectReference Include="..\EvalToolkit.WorkIQ\EvalToolkit.WorkIQ.csproj" />
   </ItemGroup>
 

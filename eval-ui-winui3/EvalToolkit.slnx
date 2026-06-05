@@ -4,6 +4,7 @@
     <Project Path="src/EvalToolkit.Core/EvalToolkit.Core.csproj" />
     <Project Path="src/EvalToolkit.EvalGen/EvalToolkit.EvalGen.csproj" />
     <Project Path="src/EvalToolkit.EvalScore/EvalToolkit.EvalScore.csproj" />
+    <Project Path="src/EvalToolkit.Jobs/EvalToolkit.Jobs.csproj" />
     <Project Path="src/EvalToolkit.Parity.Harness/EvalToolkit.Parity.Harness.csproj" />
     <Project Path="src/EvalToolkit.UI/EvalToolkit.UI.csproj" />
     <Project Path="src/EvalToolkit.WorkIQ/EvalToolkit.WorkIQ.csproj" />
@@ -12,6 +13,7 @@
     <Project Path="tests/EvalToolkit.Cli.Tests/EvalToolkit.Cli.Tests.csproj" />
     <Project Path="tests/EvalToolkit.EvalGen.Tests/EvalToolkit.EvalGen.Tests.csproj" />
     <Project Path="tests/EvalToolkit.EvalScore.Tests/EvalToolkit.EvalScore.Tests.csproj" />
+    <Project Path="tests/EvalToolkit.Jobs.Tests/EvalToolkit.Jobs.Tests.csproj" />
     <Project Path="tests/EvalToolkit.Parity.Tests/EvalToolkit.Parity.Tests.csproj" />
     <Project Path="tests/EvalToolkit.WorkIQ.Tests/EvalToolkit.WorkIQ.Tests.csproj" />
   </Folder>
