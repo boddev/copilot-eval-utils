@@ -27,6 +27,16 @@
          UglyToad.PdfPig) for PDF text extraction. Semantic parity
          only with pdf-parse v2 — see PdfReader xmldoc. -->
     <PackageReference Include="PdfPig" />
+    <!-- Sources-port slice 18: AngleSharp replaces cheerio for HTML
+         parsing in WebSource. AngleSharp is the standard .NET HTML5
+         parser; supports CSS selectors / DOM querying with the same
+         shape as cheerio (selector → collection → text/attr). -->
+    <PackageReference Include="AngleSharp" />
+    <!-- Sources-port slice 18: Microsoft.Data.Sqlite replaces the
+         better-sqlite3 + child_process CLI shelling that the TS
+         DatabaseSource used. Proper managed driver — no native
+         dependency at packaging time (SQLitePCLRaw bundled).  -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>

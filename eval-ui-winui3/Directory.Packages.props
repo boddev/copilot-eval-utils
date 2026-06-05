@@ -123,5 +123,22 @@
     <PackageVersion Include="Microsoft.Identity.Client" Version="4.84.1" />
     <PackageVersion Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.84.1" />
 
+    <!--
+      Sources-port slice 18 — third-party adapters that replace the
+      JS-only dependencies the TS sources used.
+
+      AngleSharp 1.x: standards-compliant HTML5 parser with the same
+      conceptual model as cheerio (selectors → query API → text/attr).
+      WebSource.fetch parses crawled HTML with AngleSharp.
+
+      Microsoft.Data.Sqlite 9.x: managed SQLite ADO.NET provider.
+      Replaces the better-sqlite3 + child_process shelling the TS
+      DatabaseSource used. Bundles SQLitePCLRaw with the e_sqlite3
+      runtime so no native dependency is required at packaging time.
+      Picked 9.0.0 (current LTS-aligned wave on net9/net10).
+    -->
+    <PackageVersion Include="AngleSharp" Version="1.3.0" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+
   </ItemGroup>
 </Project>
