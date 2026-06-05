@@ -69,6 +69,15 @@ public sealed class EvalRow
     public string? ThreadName { get; set; }
     public string? ThreadDescription { get; set; }
 
+    /// <summary>Category tag from the EvalGen sidecar; used for per-category reports.</summary>
+    public string? Category { get; set; }
+
+    /// <summary>Difficulty tag from the EvalGen sidecar; used for per-difficulty reports.</summary>
+    public string? Difficulty { get; set; }
+
+    /// <summary>Grounding confidence tag from the EvalGen sidecar; used for diagnostics.</summary>
+    public string? GroundingConfidence { get; set; }
+
     /// <summary>Additional context used by groundedness-style evaluators.</summary>
     public string? Context { get; set; }
 
