@@ -30,10 +30,12 @@ public sealed class JobsRepository : IJobsRepository
             return Array.Empty<JobSummary>();
         }
 
-        IEnumerable<string> jobDirs;
+        string[] jobDirs;
         try
         {
-            jobDirs = Directory.EnumerateDirectories(jobsRoot);
+            // Materialize eagerly so a mid-enumeration IO error (folder
+            // deleted, ACLs changed) does not bubble out of the foreach.
+            jobDirs = Directory.EnumerateDirectories(jobsRoot).ToArray();
         }
         catch (IOException) { return Array.Empty<JobSummary>(); }
         catch (UnauthorizedAccessException) { return Array.Empty<JobSummary>(); }

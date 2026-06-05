@@ -60,33 +60,47 @@ public sealed partial class JobsSidebarViewModel : ObservableObject, IDisposable
     [RelayCommand]
     public async Task RefreshAsync()
     {
-        // GPT-5.5 review #11: AsyncRelayCommand (auto-generated above)
-        // prevents overlapping invocations from the button; the gate
-        // additionally guards against overlap with auto-refresh from
-        // the JobStateChanged event.
-        if (!await _refreshGate.WaitAsync(0).ConfigureAwait(false))
+        // GPT-5.5 review #1+#2: marshal the entire VM-state-change path
+        // onto the UI thread so IsRefreshing and other observable props
+        // are never mutated from a worker thread, and dispose-races are
+        // checked at every await boundary.
+        if (_disposed) return;
+        if (!_dispatcher.HasThreadAccess)
+        {
+            _dispatcher.TryEnqueue(() => _ = RefreshAsyncUiThread());
+            return;
+        }
+        await RefreshAsyncUiThread().ConfigureAwait(true);
+    }
+
+    private async Task RefreshAsyncUiThread()
+    {
+        if (_disposed) return;
+        // Non-blocking gate: if a refresh is already in flight, skip.
+        if (!await _refreshGate.WaitAsync(0).ConfigureAwait(true))
         {
             return;
         }
         try
         {
             IsRefreshing = true;
-            var jobs = await Task.Run(() => _repository.ListJobs(_workspaceRoot)).ConfigureAwait(false);
-
-            _dispatcher.TryEnqueue(() =>
+            var jobs = await Task.Run(() => _repository.ListJobs(_workspaceRoot)).ConfigureAwait(true);
+            if (_disposed) return;
+            Jobs.Clear();
+            foreach (var j in jobs)
             {
-                Jobs.Clear();
-                foreach (var j in jobs)
-                {
-                    Jobs.Add(new JobSummaryViewModel(j));
-                }
-                HasJobs = Jobs.Count > 0;
-            });
+                Jobs.Add(new JobSummaryViewModel(j));
+            }
+            HasJobs = Jobs.Count > 0;
         }
         finally
         {
-            IsRefreshing = false;
-            _refreshGate.Release();
+            if (!_disposed)
+            {
+                IsRefreshing = false;
+                try { _refreshGate.Release(); }
+                catch (ObjectDisposedException) { /* disposed mid-refresh */ }
+            }
         }
     }
 
@@ -119,9 +133,23 @@ public sealed partial class JobsSidebarViewModel : ObservableObject, IDisposable
 
     private void OnJobStateChanged(object? sender, JobStateChangedEventArgs e)
     {
-        // Fire-and-forget refresh; gate inside RefreshAsync prevents
-        // pile-up. Background-thread safe.
-        _ = RefreshAsync();
+        // GPT-5.5 review #2: observe fire-and-forget failures so a
+        // transient IO exception during refresh does not crash the
+        // process via an unobserved task exception.
+        _ = SafeRefreshAsync();
+    }
+
+    private async Task SafeRefreshAsync()
+    {
+        try
+        {
+            await RefreshAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException) { /* disposed mid-flight */ }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"JobsSidebar refresh failed: {ex}");
+        }
     }
 
     public void Dispose()

@@ -28,6 +28,15 @@ public sealed partial class MainShell : Page
         JobsList.ItemsSource = ViewModel.Sidebar.Jobs;
 
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+    }
+
+    private void OnSidebarPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
+    {
+        if (args.PropertyName == nameof(JobsSidebarViewModel.HasJobs))
+        {
+            UpdateEmptyHint();
+        }
     }
 
     private void UpdateEmptyHint()
@@ -52,18 +61,19 @@ public sealed partial class MainShell : Page
         App.Current.Navigation.Register("Wizard", typeof(WizardView));
         App.Current.Navigation.NavigateTo(typeof(WizardView));
 
-        ViewModel.Sidebar.PropertyChanged += (_, args) =>
-        {
-            if (args.PropertyName == nameof(JobsSidebarViewModel.HasJobs))
-            {
-                UpdateEmptyHint();
-            }
-        };
+        ViewModel.Sidebar.PropertyChanged += OnSidebarPropertyChanged;
 
         // Kick off initial population so the user sees any pre-existing
         // jobs from prior sessions immediately.
         await ViewModel.Sidebar.RefreshAsync();
         UpdateEmptyHint();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        // GPT-5.5 review #3: prevent handler leak if MainShell is
+        // recreated (the sidebar VM is long-lived in App).
+        ViewModel.Sidebar.PropertyChanged -= OnSidebarPropertyChanged;
     }
 
     private void JobsList_ItemClick(object sender, ItemClickEventArgs e)

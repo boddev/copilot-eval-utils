@@ -71,8 +71,14 @@ public static class JobMetadataStore
 
         try
         {
-            string json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<JobMetadata>(json, s_options);
+            // Open with permissive sharing so a concurrent atomic write
+            // (File.Move overwrite) is not blocked by a sidebar read.
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return JsonSerializer.Deserialize<JobMetadata>(stream, s_options);
         }
         catch (JsonException) { return null; }
         catch (IOException) { return null; }
