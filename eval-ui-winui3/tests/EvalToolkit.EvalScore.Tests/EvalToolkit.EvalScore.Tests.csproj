@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\EvalToolkit.EvalScore\EvalToolkit.EvalScore.csproj" />
     <ProjectReference Include="..\..\src\EvalToolkit.Core\EvalToolkit.Core.csproj" />
+    <ProjectReference Include="..\..\src\EvalToolkit.WorkIQ\EvalToolkit.WorkIQ.csproj" />
   </ItemGroup>
 
 </Project>
