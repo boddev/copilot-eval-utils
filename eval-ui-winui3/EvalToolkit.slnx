@@ -5,6 +5,7 @@
     <Project Path="src/EvalToolkit.EvalGen/EvalToolkit.EvalGen.csproj" />
     <Project Path="src/EvalToolkit.EvalScore/EvalToolkit.EvalScore.csproj" />
     <Project Path="src/EvalToolkit.Parity.Harness/EvalToolkit.Parity.Harness.csproj" />
+    <Project Path="src/EvalToolkit.UI/EvalToolkit.UI.csproj" />
     <Project Path="src/EvalToolkit.WorkIQ/EvalToolkit.WorkIQ.csproj" />
   </Folder>
   <Folder Name="/tests/">

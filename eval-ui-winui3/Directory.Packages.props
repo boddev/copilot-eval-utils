@@ -148,5 +148,23 @@
     -->
     <PackageVersion Include="System.CommandLine" Version="2.0.0-beta6.25358.103" />
 
+    <!--
+      Slice 21 winui-shell — WinUI 3 head, .NET 10. WindowsAppSDK 2.1.3
+      is the current stable wave supporting net10.0-windows10.0.19041.0
+      TFMs. Brings in WinUI 3, AppLifecycle (single-instance + activation),
+      Mica / Acrylic backdrops, packaged + unpackaged hosting models.
+
+      CommunityToolkit.Mvvm 8.x supplies ObservableObject /
+      ObservableProperty / RelayCommand source generators so view models
+      stay terse and the engine port doesn't need to take a dep on
+      ReactiveUI or hand-roll INotifyPropertyChanged.
+
+      H.NotifyIcon.WinUI is added separately in slice 24
+      (winui-native-plus-tray).
+    -->
+    <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.1.3" />
+    <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+
   </ItemGroup>
 </Project>
