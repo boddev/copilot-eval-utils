@@ -37,6 +37,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
+    <!--
+      C# preview required for partial properties (C# 13+). MVVM Toolkit
+      8.4's [ObservableProperty] partial-property mode is the only path
+      that's WinRT/CsWinRT-compatible for WinUI 3 (per MVVMTK0045).
+    -->
+    <LangVersion>preview</LangVersion>
+
     <DisableXamlGeneratedMain>true</DisableXamlGeneratedMain>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
 

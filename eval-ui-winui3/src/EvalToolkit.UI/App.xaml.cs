@@ -18,6 +18,7 @@ public partial class App : Application
     public ShellWindow? ShellWindow { get; private set; }
     public NavigationService Navigation { get; private set; } = null!;
     public ThemeService Theme { get; private set; } = null!;
+    public IFileDialogService FileDialog { get; private set; } = null!;
 
     // Nullable because OnReactivation can fire on a background thread
     // between Application construction and OnLaunched assigning the
@@ -36,14 +37,25 @@ public partial class App : Application
         Navigation = new NavigationService(ShellWindow.RootFrame);
         Theme = new ThemeService(ShellWindow);
         Theme.Apply(ShellWindow);
-        Navigation.NavigateTo(typeof(HomeView));
+
+        // Slice 22: the file dialog service is created with a lazy
+        // HWND provider so the VM never touches a Window. Routing the
+        // shell window's handle here keeps pickers anchored on the
+        // currently-foreground main window (no child popups yet).
+        FileDialog = new FileDialogService(() => ShellWindow!.HWnd);
+
+        // Slice 22 starts on the dataset-picker wizard. Slice 26
+        // (jobs sidebar) replaces this with a job-list landing page
+        // that opens the wizard via "New evaluation".
+        Navigation.Register("Wizard", typeof(Views.WizardView));
+        Navigation.NavigateTo(typeof(Views.WizardView));
         ShellWindow.Activate();
 
         // Drain any activations that arrived between Program.Main
         // hooking primary.Activated and OnLaunched finishing shell
         // construction. Slice 21 only needs to bring the window to
         // front; per-payload routing (file/protocol/jump-list verbs)
-        // arrives with the step views in slice 22 / 26.
+        // arrives with the FTA slice.
         foreach (var pending in ActivationQueue.Drain())
         {
             HandleActivation(pending);
