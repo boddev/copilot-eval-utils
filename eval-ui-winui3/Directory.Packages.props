@@ -140,5 +140,13 @@
     <PackageVersion Include="AngleSharp" Version="1.3.0" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.0" />
 
+    <!--
+      Slice 19 cli-shims — System.CommandLine for `eval-gen-native` and
+      `eval-score-native` argument parsing. Mirrors commander.js in
+      eval-gen/eval-score node CLIs. Pinned at 2.0.0-beta6.25358.103 — the
+      most recent prerelease as of slice-19 implementation.
+    -->
+    <PackageVersion Include="System.CommandLine" Version="2.0.0-beta6.25358.103" />
+
   </ItemGroup>
 </Project>

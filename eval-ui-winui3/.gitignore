@@ -27,6 +27,7 @@ coverage.cobertura.xml
 *.pfx
 AppPackages/
 BundleArtifacts/
+packaging/portable/dist/
 
 # Generated NuGet
 *.nupkg

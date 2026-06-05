@@ -8,6 +8,7 @@
     <Project Path="src/EvalToolkit.WorkIQ/EvalToolkit.WorkIQ.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/EvalToolkit.Cli.Tests/EvalToolkit.Cli.Tests.csproj" />
     <Project Path="tests/EvalToolkit.EvalGen.Tests/EvalToolkit.EvalGen.Tests.csproj" />
     <Project Path="tests/EvalToolkit.EvalScore.Tests/EvalToolkit.EvalScore.Tests.csproj" />
     <Project Path="tests/EvalToolkit.Parity.Tests/EvalToolkit.Parity.Tests.csproj" />
