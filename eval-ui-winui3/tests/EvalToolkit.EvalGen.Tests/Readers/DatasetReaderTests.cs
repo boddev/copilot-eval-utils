@@ -151,6 +151,23 @@ public class DatasetReaderTests : IDisposable
     }
 
     [Fact]
+    public void ReadDatasetFiles_EnumerableOverload_PreservesPathsWithCommas()
+    {
+        // Slice-23 regression guard: the single-string ReadDatasetFile API
+        // splits on commas, so a path containing a literal comma is
+        // ambiguous. The new IEnumerable<string> overload must NOT split.
+        string subdir = Path.Combine(_tmpDir, "needs, comma");
+        Directory.CreateDirectory(subdir);
+        string path = Path.Combine(subdir, "data.csv");
+        File.WriteAllText(path, "id,name\n1,a\n", new System.Text.UTF8Encoding(false));
+
+        var result = DatasetReader.ReadDatasetFiles(new[] { path });
+
+        Assert.Equal(InputFormat.Csv, result.Format);
+        Assert.Single(result.Records);
+    }
+
+    [Fact]
     public void ReadDatasetFile_XlsxFile_DispatchesToXlsxReader()
     {
         // Slice-2 dispatch coverage: an .xlsx path goes through

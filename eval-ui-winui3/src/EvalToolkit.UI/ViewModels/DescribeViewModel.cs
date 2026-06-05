@@ -26,7 +26,7 @@ public partial class DescribeViewModel : ObservableObject
     public const int MaxCount = 50;
 
     public const string DefaultExtensions =
-        "csv,json,jsonl,xlsx,xls,tsv,docx,pdf,pptx,txt,md";
+        "csv,json,jsonl,xlsx,tsv,docx,pdf,pptx,txt,md";
 
     public static readonly IReadOnlyList<ProviderOption> ProviderOptions = new[]
     {
@@ -35,7 +35,10 @@ public partial class DescribeViewModel : ObservableObject
         new ProviderOption("WorkIQ A2A", LLMProvider.WorkIqA2a),
         new ProviderOption("Azure OpenAI", LLMProvider.AzureOpenAi),
         new ProviderOption("GitHub Copilot CLI", LLMProvider.GitHubCopilot),
-        new ProviderOption("Custom command", LLMProvider.Command),
+        // LLMProvider.Command intentionally omitted in slice 23 — there is no UI
+        // field yet to capture --llm-command, and selecting it without setting
+        // EVALGEN_LLM_COMMAND silently fails at client construction. Re-add when
+        // the advanced-options panel grows a "custom command" field.
     };
 
     [ObservableProperty]

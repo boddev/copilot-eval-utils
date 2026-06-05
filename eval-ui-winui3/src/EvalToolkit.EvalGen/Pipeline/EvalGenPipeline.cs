@@ -41,6 +41,16 @@ public static class EvalGenPipeline
 
         /// <summary>Optional cancellation propagated to LLM calls.</summary>
         public CancellationToken CancellationToken { get; init; }
+
+        /// <summary>
+        /// Optional coarse-grained per-phase progress callback. Receives one
+        /// message per pipeline phase ("Profiling dataset", "Extracting facts",
+        /// "Generating intents", "Drafting questions", "Grounding answers",
+        /// "Generating assertions", "Validating", optionally
+        /// "Filtering against avoidance set"). Useful for UI progress panels
+        /// and for nicer CLI logging.
+        /// </summary>
+        public IProgress<string>? Progress { get; init; }
     }
 
     /// <summary>Output of <see cref="RunAsync"/>.</summary>
@@ -72,11 +82,14 @@ public static class EvalGenPipeline
         }
 
         var ct = options.CancellationToken;
+        var progress = options.Progress;
 
         // 1. Profile dataset
+        progress?.Report("Profiling dataset");
         var profile = Profiler.ProfileDataset(options.Records, options.SourceName, options.Format);
 
         // 2. Extract facts — row pool scales with requested count.
+        progress?.Report("Extracting facts");
         var targetRecords = Math.Min(options.Records.Count, Math.Max(100, options.Count * 4));
         var factBudget = Math.Max(200, targetRecords * 8);
         var facts = FactExtractor.ExtractFacts(options.Records, profile, new FactExtractor.ExtractFactsOptions
@@ -107,17 +120,21 @@ public static class EvalGenPipeline
         }
 
         // 4. LLM intent generation.
+        progress?.Report("Generating intents");
         var intents = await QuestionGenerator.GenerateIntentsAsync(
             profile, facts, options.Description, options.Count, options.LlmClient,
             assignedRows, ct).ConfigureAwait(false);
 
         // 5. LLM question drafting.
+        progress?.Report("Drafting questions");
         var drafted = await QuestionGenerator.DraftQuestionsAsync(
             intents, facts, options.Records, profile, options.Description, options.LlmClient,
             ct).ConfigureAwait(false);
 
         // 6. Ground answers + generate assertions.
+        progress?.Report("Grounding answers");
         var grounded = AnswerGrounder.GroundAllAnswers(drafted, options.Records, options.SourceName);
+        progress?.Report("Generating assertions");
         var assertionMap = AssertionGenerator.GenerateAllAssertions(grounded);
 
         // 7. Build eval items.
@@ -128,12 +145,14 @@ public static class EvalGenPipeline
         var allWarnings = new List<string>();
         if (options.Avoidance is not null)
         {
+            progress?.Report("Filtering against avoidance set");
             avoidanceResult = Dedupe.FilterAgainstAvoidance(evalItems, options.Avoidance, options.SourceName);
             evalItems = avoidanceResult.Items;
             allWarnings.AddRange(avoidanceResult.Warnings);
         }
 
         // 9. Validate.
+        progress?.Report("Validating");
         var (validated, validation) = Validator.ValidateEvalSet(evalItems, options.Records.Count);
 
         return new Result

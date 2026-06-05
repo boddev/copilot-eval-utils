@@ -27,8 +27,28 @@ public sealed partial class WizardView : Page
 
         // VM is created here once so step 1/2 state survives navigation
         // away and back; we don't recreate on Loaded.
-        ViewModel = new WizardViewModel(App.Current.FileDialog);
+        ViewModel = new WizardViewModel(
+            App.Current.FileDialog,
+            App.Current.JobService,
+            App.Current.WorkspaceRoot);
         DataContext = ViewModel;
+
+        // Slice 23: auto-scroll the live log to the latest line as
+        // entries arrive. Hook the VM's collection so the ScrollViewer
+        // pins to the bottom (mirrors terminal tailing behavior).
+        ViewModel.Progress.LogLines.CollectionChanged += (_, _) =>
+        {
+            // ScrollViewer.ChangeView must run on the UI thread; the
+            // ObservableCollection raises on whichever context added
+            // the item — which is the UI thread because the Progress<T>
+            // callback marshals there. Still, defer via DispatcherQueue
+            // so the ItemsRepeater has a chance to materialize the new
+            // item before we measure ScrollableHeight.
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                LogScrollViewer?.ChangeView(null, LogScrollViewer.ScrollableHeight, null, true);
+            });
+        };
     }
 
     private void DropZone_DragOver(object sender, DragEventArgs e)

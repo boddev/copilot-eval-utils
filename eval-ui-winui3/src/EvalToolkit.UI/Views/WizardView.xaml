@@ -162,13 +162,6 @@
                                      Text="{Binding Extensions, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
-                        <controls:InfoBar
-                            IsOpen="{x:Bind ViewModel.IsGenerationPending, Mode=OneWay}"
-                            Severity="Informational"
-                            IsClosable="False"
-                            Title="Generation queued"
-                            Message="{x:Bind ViewModel.GenerationPendingMessage, Mode=OneWay}"/>
-
                         <Expander Header="Advanced options" HorizontalAlignment="Stretch">
                             <Grid ColumnSpacing="16" RowSpacing="12" Padding="0,8,0,0">
                                 <Grid.ColumnDefinitions>
@@ -215,6 +208,100 @@
                         </Expander>
                     </StackPanel>
                 </Border>
+                <!-- ============ STEP 3: Progress ============ -->
+                <Border x:Name="Step3Panel"
+                        Style="{StaticResource PanelStyle}"
+                        DataContext="{x:Bind ViewModel.Progress, Mode=OneTime}"
+                        Visibility="{x:Bind ViewModel.IsStep3Visible, Mode=OneWay}">
+                    <StackPanel Spacing="14">
+                        <TextBlock Style="{StaticResource StepHeadingStyle}"
+                                   Text="Generating evaluation set"/>
+                        <TextBlock Style="{StaticResource StepDescriptionStyle}"
+                                   Text="The job is running. You can watch live progress below or cancel at any time."/>
+
+                        <Grid ColumnSpacing="12" VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding Phase}"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding StatusMessage}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <ProgressBar IsIndeterminate="{Binding IsIndeterminate}"
+                                     Value="{Binding PercentValue}"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     ShowError="{Binding IsFailed}"/>
+
+                        <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="0"
+                                MaxHeight="300">
+                            <ScrollViewer x:Name="LogScrollViewer"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          Padding="12,8">
+                                <ItemsRepeater ItemsSource="{Binding LogLines}">
+                                    <ItemsRepeater.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <TextBlock Text="{x:Bind}"
+                                                       FontFamily="Consolas"
+                                                       FontSize="12"
+                                                       Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                                       Margin="0,1"
+                                                       TextWrapping="NoWrap"/>
+                                        </DataTemplate>
+                                    </ItemsRepeater.ItemTemplate>
+                                </ItemsRepeater>
+                            </ScrollViewer>
+                        </Border>
+
+                        <controls:InfoBar
+                            IsOpen="{x:Bind ViewModel.Progress.IsComplete, Mode=OneWay}"
+                            Severity="Success"
+                            IsClosable="False"
+                            Title="Generation complete"
+                            Message="{x:Bind ViewModel.Progress.StatusMessage, Mode=OneWay}"/>
+
+                        <controls:InfoBar
+                            IsOpen="{x:Bind ViewModel.Progress.IsFailed, Mode=OneWay}"
+                            Severity="Error"
+                            IsClosable="False"
+                            Title="Generation failed"
+                            Message="{x:Bind ViewModel.Progress.StatusMessage, Mode=OneWay}"/>
+
+                        <!--
+                            Slice 23: action row visibility tracks HasOutputs
+                            (set as soon as the service emits the job folder),
+                            so the "Open output folder" button is reachable on
+                            cancel/failure too. The CSV/review buttons remain
+                            disabled by their CanExecute predicates until those
+                            specific files have been written.
+                        -->
+                        <StackPanel Orientation="Horizontal" Spacing="8"
+                                    Visibility="{x:Bind ViewModel.Progress.HasOutputs, Mode=OneWay}">
+                            <Button Content="Open CSV in Excel"
+                                    Style="{ThemeResource AccentButtonStyle}"
+                                    Command="{Binding OpenCsvCommand}"/>
+                            <Button Content="Open review"
+                                    Command="{Binding OpenReviewCommand}"/>
+                            <Button Content="Show in folder"
+                                    Command="{Binding RevealCsvCommand}"/>
+                            <Button Content="Open output folder"
+                                    Command="{Binding OpenOutputFolderCommand}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
             </Grid>
         </ScrollViewer>
 
@@ -222,18 +309,28 @@
         <Grid Grid.Row="2" ColumnSpacing="8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <Button Grid.Column="0"
                     Content="Back"
                     Command="{x:Bind ViewModel.GoBackCommand}"/>
-            <Button Grid.Column="2"
+            <Button Grid.Column="1"
+                    Content="Start over"
+                    Command="{x:Bind ViewModel.StartOverCommand}"
+                    Visibility="{x:Bind ViewModel.IsStep3Visible, Mode=OneWay}"/>
+            <Button Grid.Column="3"
+                    Content="Cancel"
+                    Command="{x:Bind ViewModel.CancelCommand}"
+                    Visibility="{x:Bind ViewModel.Progress.IsRunning, Mode=OneWay}"/>
+            <Button Grid.Column="4"
                     Content="Next"
                     Command="{x:Bind ViewModel.GoNextCommand}"
                     Visibility="{x:Bind ViewModel.IsStep1Visible, Mode=OneWay}"/>
-            <Button Grid.Column="3"
+            <Button Grid.Column="5"
                     Style="{ThemeResource AccentButtonStyle}"
                     Content="Generate evaluation set"
                     Command="{x:Bind ViewModel.GenerateCommand}"

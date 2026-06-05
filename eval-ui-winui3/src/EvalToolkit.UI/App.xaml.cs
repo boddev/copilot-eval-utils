@@ -19,6 +19,8 @@ public partial class App : Application
     public NavigationService Navigation { get; private set; } = null!;
     public ThemeService Theme { get; private set; } = null!;
     public IFileDialogService FileDialog { get; private set; } = null!;
+    public IEvalGenJobService JobService { get; private set; } = null!;
+    public string WorkspaceRoot { get; private set; } = null!;
 
     // Nullable because OnReactivation can fire on a background thread
     // between Application construction and OnLaunched assigning the
@@ -43,6 +45,12 @@ public partial class App : Application
         // shell window's handle here keeps pickers anchored on the
         // currently-foreground main window (no child popups yet).
         FileDialog = new FileDialogService(() => ShellWindow!.HWnd);
+
+        // Slice 23: workspace root + job service. Default workspace lives
+        // under %LOCALAPPDATA%\EvalToolkit\workspace; slice 24 (jobs sidebar)
+        // can swap to an imported workspace via a first-run wizard.
+        WorkspaceRoot = EvalGenJobService.DefaultWorkspaceRoot();
+        JobService = new EvalGenJobService();
 
         // Slice 22 starts on the dataset-picker wizard. Slice 26
         // (jobs sidebar) replaces this with a job-list landing page

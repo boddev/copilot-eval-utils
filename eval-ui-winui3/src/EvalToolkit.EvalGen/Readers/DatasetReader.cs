@@ -67,7 +67,6 @@ public static class DatasetReader
     public static DatasetReadResult ReadDatasetFile(string fileInput, ReadDatasetOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileInput);
-        options ??= new ReadDatasetOptions();
 
         string[] inputs = fileInput
             .Split(',', StringSplitOptions.RemoveEmptyEntries)
@@ -75,10 +74,25 @@ public static class DatasetReader
             .Where(s => s.Length > 0)
             .ToArray();
 
+        return ReadDatasetFiles(inputs, options);
+    }
+
+    /// <summary>
+    /// Read a dataset from a pre-split sequence of file / directory
+    /// paths. Use this overload when the caller has structured input
+    /// (e.g., the WinUI dataset picker) so paths containing literal
+    /// commas don't get truncated by the string-split overload.
+    /// </summary>
+    public static DatasetReadResult ReadDatasetFiles(IEnumerable<string> inputs, ReadDatasetOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        options ??= new ReadDatasetOptions();
+
         var filesToRead = new List<string>();
         foreach (string input in inputs)
         {
-            string absPath = Path.GetFullPath(input);
+            if (string.IsNullOrWhiteSpace(input)) continue;
+            string absPath = Path.GetFullPath(input.Trim());
             if (File.Exists(absPath))
             {
                 filesToRead.Add(absPath);
@@ -110,7 +124,7 @@ public static class DatasetReader
         foreach (string filePath in filesToRead)
         {
             ReadResult result = ReadSingleFile(filePath);
-            primaryFormat = result.Format; // "Last format wins" — matches TS.
+            primaryFormat = result.Format;
             string fileName = Path.GetFileName(filePath);
             foreach (DatasetRow row in result.Records)
             {
