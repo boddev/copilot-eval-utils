@@ -61,6 +61,12 @@ public sealed partial class MainShell : Page
         App.Current.Navigation.Register("Wizard", typeof(WizardView));
         App.Current.Navigation.NavigateTo(typeof(WizardView));
 
+        // Slice 29 (GPT-5.5 code review BLOCKER #2): drain verbs that
+        // were queued during cold-start before the "Wizard" route was
+        // registered. Must run AFTER Register/NavigateTo above so
+        // --new-evaluation lands somewhere meaningful.
+        App.Current.DrainPendingVerbs();
+
         ViewModel.Sidebar.PropertyChanged += OnSidebarPropertyChanged;
 
         // Kick off initial population so the user sees any pre-existing

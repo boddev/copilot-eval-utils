@@ -4,6 +4,12 @@ using EvalToolkit.UI.Views;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using EvalToolkit.Jobs;
 
 namespace EvalToolkit.UI;
 
@@ -24,8 +30,18 @@ public partial class App : Application
     public IEvalScoreJobService ScoreService { get; private set; } = null!;
     public IWebView2RuntimeService WebView2Runtime { get; private set; } = null!;
     public ITrayIconService Tray { get; private set; } = null!;
+    public IJumpListService JumpList { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
+
+    // Slice 29 (GPT-5.5 code review BLOCKER #2): jump-list / activation
+    // verbs may arrive in OnLaunched BEFORE MainShell.OnLoaded has had
+    // a chance to register the "Wizard" route with NavigationService.
+    // Queue verbs that need navigation until MainShell drains them via
+    // DrainPendingVerbs(). Verbs that don't depend on navigation
+    // (--job-id) execute immediately. Single-threaded UI-thread access
+    // — no lock needed.
+    private readonly System.Collections.Generic.Queue<string> _pendingVerbs = new();
 
     // Nullable because OnReactivation can fire on a background thread
     // between Application construction and OnLaunched assigning the
@@ -101,6 +117,20 @@ public partial class App : Application
         Tray.ExitRequested += OnTrayExitRequested;
         Tray.Initialize(ShellWindow);
 
+        // Slice 29: jump-list integration. Subscribes to both job
+        // services so the "Recent jobs" category stays fresh as work
+        // completes, and registers a "New evaluation" user task. Built
+        // on Win32 ICustomDestinationList so it works in BOTH
+        // unpackaged dev and packaged MSIX runs (slice 30). Initial
+        // refresh kicks off here; it's fire-and-forget — a slow shell
+        // call must not delay first paint.
+        JumpList = new JumpListService(
+            new EvalToolkit.Jobs.JobsRepository(),
+            WorkspaceRoot,
+            UiDispatcher);
+        JumpList.Initialize(JobService, ScoreService);
+        _ = JumpList.RefreshAsync();
+
         // Drain any activations that arrived between Program.Main
         // hooking primary.Activated and OnLaunched finishing shell
         // construction. Slice 21 only needs to bring the window to
@@ -109,6 +139,15 @@ public partial class App : Application
         foreach (var pending in ActivationQueue.Drain())
         {
             HandleActivation(pending);
+        }
+
+        // Slice 29: also route this launch's own arguments, so launching
+        // EvalToolkit.UI.exe directly with --job-id or --new-evaluation
+        // (jump-list cold-start case) lands the verb instead of just
+        // opening the wizard.
+        if (!string.IsNullOrWhiteSpace(args.Arguments))
+        {
+            HandleVerb(args.Arguments);
         }
     }
 
@@ -119,6 +158,7 @@ public partial class App : Application
         // call cleanly tears the app down. Dispose the tray first so
         // the icon goes away immediately even if XAML shutdown stalls.
         try { Tray?.Dispose(); } catch { /* swallow */ }
+        try { JumpList?.Dispose(); } catch { /* swallow */ }
         Exit();
     }
 
@@ -179,7 +219,153 @@ public partial class App : Application
         {
             ShellWindow?.BringToFront();
         }
-        _ = args;
+
+        // Slice 29: route jump-list verbs (--job-id, --new-evaluation).
+        // For Launch activations the verb arrives as a single Arguments
+        // string on Microsoft.Windows.AppLifecycle.Activation.ILaunchActivatedEventArgs.
+        try
+        {
+            if (args.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch
+                && !string.IsNullOrWhiteSpace(launch.Arguments))
+            {
+                HandleVerb(launch.Arguments);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"App.HandleActivation: verb parse failed: {ex}");
+        }
+    }
+
+    internal void HandleVerb(string commandLine)
+    {
+        HandleVerb(commandLine, allowQueueing: true);
+    }
+
+    /// <summary>
+    /// Parses an EvalToolkit.UI command-line / activation argument
+    /// string for slice 29's jump-list verbs and routes accordingly.
+    /// Unknown / empty input is a no-op (the activation has already
+    /// brought the window forward). When <paramref name="allowQueueing"/>
+    /// is true and a verb requires navigation but the "Wizard" route
+    /// isn't registered yet (race with MainShell.OnLoaded), the verb
+    /// is queued for replay via <see cref="DrainPendingVerbs"/>.
+    /// </summary>
+    private void HandleVerb(string commandLine, bool allowQueueing)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine)) return;
+
+        string[] tokens;
+        try
+        {
+            tokens = ParseCommandLine(commandLine);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"App.HandleVerb: CommandLineToArgvW failed: {ex}");
+            return;
+        }
+        if (tokens.Length == 0) return;
+
+        switch (tokens[0])
+        {
+            case "--new-evaluation":
+                try
+                {
+                    bool navigated = Navigation?.NavigateTo("Wizard") ?? false;
+                    if (!navigated && allowQueueing)
+                    {
+                        // GPT-5.5 BLOCKER #2: route may not be registered
+                        // yet during cold start. Re-queue so MainShell
+                        // drains it once OnLoaded registers "Wizard".
+                        _pendingVerbs.Enqueue(commandLine);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"App.HandleVerb(new-evaluation): {ex}");
+                }
+                break;
+
+            case "--job-id" when tokens.Length >= 2:
+                var jobId = tokens[1];
+                try
+                {
+                    var repo = new EvalToolkit.Jobs.JobsRepository();
+                    var match = repo
+                        .ListJobs(WorkspaceRoot)
+                        .FirstOrDefault(j => string.Equals(j.JobId, jobId, StringComparison.Ordinal));
+                    if (match is null || !Directory.Exists(match.Path))
+                    {
+                        Debug.WriteLine($"App.HandleVerb(job-id): no match for '{jobId}'");
+                        break;
+                    }
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = match.Path,
+                        UseShellExecute = true,
+                        Verb = "open",
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"App.HandleVerb(job-id): {ex}");
+                }
+                break;
+
+            default:
+                // Unknown verb: ignore so a future arg surface doesn't
+                // crash older clients.
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Called by <see cref="MainShell.OnLoaded"/> after it has
+    /// registered the "Wizard" route with NavigationService. Replays
+    /// any verbs that arrived in OnLaunched before the route existed.
+    /// Single-threaded UI-thread call.
+    /// </summary>
+    internal void DrainPendingVerbs()
+    {
+        while (_pendingVerbs.Count > 0)
+        {
+            var verb = _pendingVerbs.Dequeue();
+            // allowQueueing=false: if it STILL fails, log and drop —
+            // don't infinite-loop. Should not happen post-OnLoaded.
+            HandleVerb(verb, allowQueueing: false);
+        }
+    }
+
+    private static readonly char[] s_cmdSeparators = new[] { ' ', '\t' };
+
+    /// <summary>
+    /// Tokenize a Windows command-line string using the native
+    /// CommandLineToArgvW. Falls back to a naive split on whitespace
+    /// if the shell isn't available (extremely defensive — the verb
+    /// strings produced by JumpListService have no spaces or quotes).
+    /// </summary>
+    private static string[] ParseCommandLine(string commandLine)
+    {
+        IntPtr argv = JumpListInterop.CommandLineToArgvW(commandLine, out int argc);
+        if (argv == IntPtr.Zero)
+        {
+            return commandLine.Split(s_cmdSeparators, StringSplitOptions.RemoveEmptyEntries);
+        }
+        try
+        {
+            var tokens = new string[argc];
+            for (int i = 0; i < argc; i++)
+            {
+                IntPtr ptr = Marshal.ReadIntPtr(argv, i * IntPtr.Size);
+                tokens[i] = Marshal.PtrToStringUni(ptr) ?? string.Empty;
+            }
+            return tokens;
+        }
+        finally
+        {
+            JumpListInterop.LocalFree(argv);
+        }
     }
 }
 

@@ -45,6 +45,25 @@ internal static class Program
     {
         try
         {
+            // Slice 29 (winui-native-plus-jumplist): set the explicit
+            // AppUserModelID BEFORE any window is shown so the unpackaged
+            // EvalToolkit.UI process gets a stable taskbar identity that
+            // ICustomDestinationList can target. When slice 30 ships the
+            // MSIX, the package-identity AUMID takes precedence and this
+            // call is a harmless no-op. Must run before ComWrappers init
+            // so the shell sees a consistent identity from the first COM
+            // activation onward.
+            try
+            {
+                EvalToolkit.UI.Services.JumpListInterop
+                    .SetCurrentProcessExplicitAppUserModelID(
+                        EvalToolkit.UI.Services.JumpListService.DefaultAppId);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"SetCurrentProcessExplicitAppUserModelID failed: {ex}");
+            }
+
             ComWrappersSupport.InitializeComWrappers();
 
             if (!DecideSingleInstance())
