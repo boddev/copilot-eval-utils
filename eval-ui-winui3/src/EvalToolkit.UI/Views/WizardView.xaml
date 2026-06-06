@@ -298,8 +298,125 @@
                                     Command="{Binding RevealCsvCommand}"/>
                             <Button Content="Open output folder"
                                     Command="{Binding OpenOutputFolderCommand}"/>
+                            <Button Content="Edit rows…"
+                                    Command="{x:Bind ViewModel.GoToEditorCommand}"/>
                         </StackPanel>
                     </StackPanel>
+                </Border>
+
+                <!-- ============ STEP 4: Row editor ============ -->
+                <Border x:Name="Step4Panel"
+                        Style="{StaticResource PanelStyle}"
+                        DataContext="{x:Bind ViewModel.Editor, Mode=OneTime}"
+                        Visibility="{x:Bind ViewModel.IsStep4Visible, Mode=OneWay}">
+                    <Grid RowSpacing="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Style="{StaticResource StepHeadingStyle}"
+                                   Text="Review and edit rows"/>
+                        <TextBlock Grid.Row="1" Style="{StaticResource StepDescriptionStyle}"
+                                   Text="Edit prompts and expected answers in place. Save writes back to the same CSV so scoring picks up your changes."/>
+
+                        <Grid Grid.Row="2" ColumnSpacing="12" VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Text="{Binding CsvPath}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                <TextBlock x:Name="EditorStatusLine"
+                                           Text="{x:Bind ViewModel.Editor.DirtyCount, Mode=OneWay}"
+                                           FontSize="12"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <Button Content="Save"
+                                        Style="{ThemeResource AccentButtonStyle}"
+                                        Command="{Binding SaveCommand}"/>
+                                <Button Content="Revert all"
+                                        Command="{Binding RevertAllCommand}"/>
+                                <Button Content="Reload"
+                                        Command="{Binding ReloadCommand}"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <controls:InfoBar Grid.Row="3"
+                            IsOpen="{x:Bind ViewModel.Editor.HasError, Mode=OneWay}"
+                            Severity="Error"
+                            IsClosable="True"
+                            Title="Save error"
+                            Message="{x:Bind ViewModel.Editor.ErrorMessage, Mode=OneWay}"/>
+
+                        <ListView Grid.Row="4"
+                                  x:Name="EditorRowsList"
+                                  ItemsSource="{Binding Rows}"
+                                  SelectionMode="None"
+                                  MaxHeight="640">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="vm:EvalRowViewModel">
+                                    <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="0,12,0,12">
+                                        <Grid ColumnSpacing="8" RowSpacing="6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <FontIcon Grid.Row="0" Grid.Column="0"
+                                                      Glyph="&#xE7BA;"
+                                                      FontSize="12"
+                                                      VerticalAlignment="Top"
+                                                      Margin="0,8,4,0"
+                                                      Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                                      Visibility="{x:Bind IsDirty, Mode=OneWay}"/>
+                                            <TextBox Grid.Row="0" Grid.Column="1"
+                                                     Header="Prompt"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     MinHeight="70"
+                                                     Text="{x:Bind Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Row="0" Grid.Column="2"
+                                                     Header="Expected answer"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     MinHeight="70"
+                                                     Text="{x:Bind ExpectedAnswer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Row="1" Grid.Column="1"
+                                                     Header="Source location"
+                                                     Text="{x:Bind SourceLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Row="1" Grid.Column="2"
+                                                     Header="Actual answer (filled by scoring)"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     MinHeight="50"
+                                                     Text="{x:Bind ActualAnswer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Grid>
                 </Border>
 
             </Grid>

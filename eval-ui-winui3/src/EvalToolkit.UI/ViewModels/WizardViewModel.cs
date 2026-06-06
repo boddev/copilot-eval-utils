@@ -38,15 +38,18 @@ public partial class WizardViewModel : ObservableObject, IDisposable
     public DatasetPickerViewModel DatasetPicker { get; }
     public DescribeViewModel Describe { get; }
     public ProgressViewModel Progress { get; }
+    public EvalEditorViewModel Editor { get; }
 
     public WizardViewModel(
         IFileDialogService dialog,
         IEvalGenJobService jobService,
-        string workspaceRoot)
+        string workspaceRoot,
+        Microsoft.UI.Dispatching.DispatcherQueue dispatcher)
     {
         ArgumentNullException.ThrowIfNull(dialog);
         ArgumentNullException.ThrowIfNull(jobService);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
+        ArgumentNullException.ThrowIfNull(dispatcher);
 
         _jobService = jobService;
         _workspaceRoot = workspaceRoot;
@@ -54,11 +57,13 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         DatasetPicker = new DatasetPickerViewModel(dialog);
         Describe = new DescribeViewModel();
         Progress = new ProgressViewModel();
+        Editor = new EvalEditorViewModel(dispatcher);
         CurrentStep = WizardStep.Step1Dataset;
 
         DatasetPicker.PropertyChanged += OnChildPropertyChanged;
         Describe.PropertyChanged += OnChildPropertyChanged;
         Progress.PropertyChanged += OnProgressPropertyChanged;
+        Editor.PropertyChanged += OnEditorPropertyChanged;
     }
 
     [ObservableProperty]
@@ -67,6 +72,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
     public bool IsStep1Visible => CurrentStep == WizardStep.Step1Dataset;
     public bool IsStep2Visible => CurrentStep == WizardStep.Step2Describe;
     public bool IsStep3Visible => CurrentStep == WizardStep.Step3Progress;
+    public bool IsStep4Visible => CurrentStep == WizardStep.Step4Editor;
 
     public int CurrentStepNumber => (int)CurrentStep + 1;
     public string StepHeader => $"Step {CurrentStepNumber} of 5";
@@ -83,6 +89,11 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         // From step 3 (progress) — allow back once the job is finished
         // or failed (not while running, to avoid orphaned background work).
         WizardStep.Step3Progress => !Progress.IsRunning,
+        // From step 4 (editor) — always allow back to progress (the job
+        // is already complete by the time the user is in the editor).
+        // The view confirms unsaved-changes via ContentDialog before
+        // actually invoking GoBack.
+        WizardStep.Step4Editor => !Editor.IsSaving && !Editor.IsLoading,
         _ => false,
     };
 
@@ -114,8 +125,24 @@ public partial class WizardViewModel : ObservableObject, IDisposable
                 // Only reachable when CanGoBack==true, i.e. not running.
                 CurrentStep = WizardStep.Step2Describe;
                 break;
+            case WizardStep.Step4Editor:
+                CurrentStep = WizardStep.Step3Progress;
+                break;
         }
     }
+
+    [RelayCommand(CanExecute = nameof(CanGoToEditor))]
+    private async Task GoToEditorAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Progress.OutputCsvPath)) return;
+        await Editor.LoadAsync(Progress.OutputCsvPath).ConfigureAwait(true);
+        CurrentStep = WizardStep.Step4Editor;
+    }
+    private bool CanGoToEditor() =>
+        Progress.IsComplete
+        && !string.IsNullOrWhiteSpace(Progress.OutputCsvPath)
+        && !Editor.IsLoading
+        && !Editor.IsSaving;
 
     [RelayCommand(CanExecute = nameof(CanGenerate))]
     private async Task GenerateAsync()
@@ -229,6 +256,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         {
             _runCts?.Cancel();
         }
+        Editor.Reset();
         CurrentStep = WizardStep.Step1Dataset;
     }
 
@@ -237,6 +265,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsStep1Visible));
         OnPropertyChanged(nameof(IsStep2Visible));
         OnPropertyChanged(nameof(IsStep3Visible));
+        OnPropertyChanged(nameof(IsStep4Visible));
         OnPropertyChanged(nameof(CurrentStepNumber));
         OnPropertyChanged(nameof(StepHeader));
         RaiseNavigationCanExecuteChanged();
@@ -259,7 +288,18 @@ public partial class WizardViewModel : ObservableObject, IDisposable
 
     private void OnProgressPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ProgressViewModel.IsRunning))
+        if (e.PropertyName == nameof(ProgressViewModel.IsRunning)
+            || e.PropertyName == nameof(ProgressViewModel.IsComplete)
+            || e.PropertyName == nameof(ProgressViewModel.OutputCsvPath))
+        {
+            RaiseNavigationCanExecuteChanged();
+        }
+    }
+
+    private void OnEditorPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(EvalEditorViewModel.IsSaving)
+            || e.PropertyName == nameof(EvalEditorViewModel.IsLoading))
         {
             RaiseNavigationCanExecuteChanged();
         }
@@ -274,6 +314,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         GoBackCommand.NotifyCanExecuteChanged();
         GenerateCommand.NotifyCanExecuteChanged();
         CancelCommand.NotifyCanExecuteChanged();
+        GoToEditorCommand.NotifyCanExecuteChanged();
     }
 
     public void Dispose()

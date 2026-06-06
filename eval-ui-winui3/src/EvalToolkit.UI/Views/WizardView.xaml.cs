@@ -30,7 +30,8 @@ public sealed partial class WizardView : Page
         ViewModel = new WizardViewModel(
             App.Current.FileDialog,
             App.Current.JobService,
-            App.Current.WorkspaceRoot);
+            App.Current.WorkspaceRoot,
+            DispatcherQueue);
         DataContext = ViewModel;
 
         // Slice 23: auto-scroll the live log to the latest line as
