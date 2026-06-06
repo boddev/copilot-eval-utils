@@ -1,0 +1,330 @@
+name: Release EvalToolkit (WinUI 3)
+
+# Triggers:
+# - push of a tag matching eval-ui-winui3-v* (signed + published release)
+# - workflow_dispatch from any branch (unsigned dry-run that exercises
+#   build + test + package, skips the Azure Trusted Signing and publish
+#   jobs; useful for validating workflow changes before tagging)
+on:
+  push:
+    tags:
+      - 'eval-ui-winui3-v*'
+  workflow_dispatch:
+
+# Never cancel a release mid-flight — partial signing + partial publish
+# would corrupt the release. Per slice-35 plan review.
+concurrency:
+  group: release-evaltoolkit-winui3
+  cancel-in-progress: false
+
+# Workflow-wide default is read-only; per-job grants escalate to
+# `id-token: write` (for OIDC) and `contents: write` (for gh release).
+permissions:
+  contents: read
+
+env:
+  # GPT-5.5 slice-34 code-review BLOCKER #1 + slice-35 NB #7: pin the
+  # Trusted Signing dlib NuGet package to a known-good version so
+  # CI is reproducible and the cache key is stable.
+  ARTIFACT_SIGNING_VERSION: '1.0.128'
+
+jobs:
+  # ----------------------------------------------------------------------
+  # Job 1: Build + test + package unsigned MSIX (x64 + arm64).
+  # Runs on every trigger so workflow_dispatch can produce dry-run
+  # artifacts without needing Azure auth.
+  # ----------------------------------------------------------------------
+  build:
+    name: Build + package ${{ matrix.arch }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+
+    defaults:
+      run:
+        working-directory: eval-ui-winui3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+
+      - name: Set up Node 20 (parity harness shells out to TS impl)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            eval-gen/package-lock.json
+
+      - name: Restore + build eval-gen
+        working-directory: eval-gen
+        run: |
+          npm ci
+          npm run build
+
+      - name: dotnet restore
+        run: dotnet restore
+
+      - name: dotnet build
+        run: dotnet build --no-restore --configuration Release
+
+      # dotnet test runs once on the x64 leg only. Tests are arch-neutral
+      # (xUnit, parity harness, etc.) so re-running on arm64 would just
+      # double CI time without catching anything new.
+      - name: dotnet test
+        if: matrix.arch == 'x64'
+        run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test-results.trx"
+
+      - name: Build MSIX (${{ matrix.arch }})
+        shell: pwsh
+        run: pwsh ./packaging/msix/build-msix.ps1 -Arch ${{ matrix.arch }}
+
+      - name: Verify unsigned MSIX structure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.arch }}'
+          $msix = Get-ChildItem ./packaging/msix/dist/$arch/*.msix |
+                    Where-Object Name -notlike '*signed*' |
+                    Select-Object -First 1
+          if (-not $msix) { throw "No unsigned MSIX produced under packaging/msix/dist/$arch/" }
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $makeAppx = Get-ChildItem -Path $sdkBin -Filter 'makeappx.exe' -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object FullName -like '*\x64\*' |
+                        Sort-Object { [version](Split-Path (Split-Path $_.FullName -Parent) -Parent | Split-Path -Leaf) } -Descending |
+                        Select-Object -First 1
+          if (-not $makeAppx) { throw "No makeappx.exe found under $sdkBin" }
+          $tmp = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/msix-verify-$([guid]::NewGuid())"
+          & $makeAppx.FullName unpack /p $msix.FullName /d $tmp.FullName /nv | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed (exit $LASTEXITCODE)" }
+          [xml]$mf = Get-Content (Join-Path $tmp.FullName 'AppxManifest.xml') -Raw
+          if ($mf.Package.Identity.ProcessorArchitecture -ne $arch) {
+            throw "Expected ProcessorArchitecture=$arch, got '$($mf.Package.Identity.ProcessorArchitecture)'"
+          }
+          if (-not (Test-Path (Join-Path $tmp.FullName 'EvalToolkit.UI.exe'))) {
+            throw 'EvalToolkit.UI.exe missing at MSIX root'
+          }
+          Write-Host "OK: unsigned MSIX is structurally valid (arch=$arch, EXE present)"
+
+      - name: Upload unsigned MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaltoolkit-msix-${{ matrix.arch }}-unsigned
+          path: eval-ui-winui3/packaging/msix/dist/${{ matrix.arch }}/*.msix
+          if-no-files-found: error
+
+      - name: Upload test results (x64 only)
+        if: always() && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaltoolkit-test-results
+          path: eval-ui-winui3/**/TestResults/*.trx
+          if-no-files-found: warn
+
+  # ----------------------------------------------------------------------
+  # Job 2: Sign each unsigned MSIX via Azure Trusted Signing.
+  # Only runs on tag pushes — workflow_dispatch from a branch stops at
+  # the `build` job above (no signed artifacts produced, no Azure auth
+  # required). environment:release ensures the OIDC subject claim
+  # matches the configured Entra federated identity credential.
+  # ----------------------------------------------------------------------
+  sign:
+    name: Sign ${{ matrix.arch }}
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/eval-ui-winui3-v')
+    runs-on: windows-2022
+    # GPT-5.5 slice-35 plan-review BLOCKER #1: standard Entra federated
+    # identity credentials require exact subject match — no wildcard.
+    # The repo's `release` environment is gated to tags matching
+    # eval-ui-winui3-v*, and the FIC is configured with subject
+    # `repo:boddev/copilot-eval-utils:environment:release`. See
+    # eval-ui-winui3/docs/ci-release-setup.md.
+    environment: release
+
+    # azure/login@v2 with OIDC needs id-token:write. contents:read is
+    # sufficient for artifact upload.
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+
+    defaults:
+      run:
+        working-directory: eval-ui-winui3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download unsigned MSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: evaltoolkit-msix-${{ matrix.arch }}-unsigned
+          path: eval-ui-winui3/packaging/msix/dist/${{ matrix.arch }}/
+
+      - name: Set up NuGet CLI
+        # GPT-5.5 slice-35 plan-review NB #7: make the nuget.exe
+        # dependency explicit rather than relying on windows-2022 having
+        # it pre-installed.
+        uses: NuGet/setup-nuget@v2
+
+      - name: Cache Microsoft.ArtifactSigning.Client NuGet package
+        uses: actions/cache@v4
+        with:
+          # `~` is expanded by actions/cache on Windows runners and
+          # resolves to %USERPROFILE%. Runner env vars are NOT exposed
+          # via the `env` context, so `${{ env.USERPROFILE }}` would
+          # silently resolve to nothing.
+          path: ~/.nuget/packages/microsoft.artifactsigning.client
+          key: artifact-signing-client-${{ env.ARTIFACT_SIGNING_VERSION }}
+
+      - name: Install Microsoft.ArtifactSigning.Client (pinned)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $env:USERPROFILE '.nuget/packages'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          nuget install Microsoft.ArtifactSigning.Client `
+                  -Version $env:ARTIFACT_SIGNING_VERSION `
+                  -ExcludeVersion `
+                  -OutputDirectory $dest `
+                  -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install Microsoft.ArtifactSigning.Client failed (exit $LASTEXITCODE)" }
+
+      - name: Azure login (OIDC federated identity)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Write Trusted Signing metadata.json
+        shell: pwsh
+        # Adopt slice-35 code-review NB #3: pass GitHub `vars` through
+        # `env:` rather than interpolating `${{ vars.X }}` directly into
+        # the pwsh source. If a value ever contained a single quote
+        # (unlikely but possible for cert profile names), inline
+        # interpolation would break out of the string literal. With
+        # env: the value reaches PowerShell as a regular env var with
+        # no quoting concerns.
+        env:
+          TS_ENDPOINT: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+          TS_ACCOUNT:  ${{ vars.TRUSTED_SIGNING_ACCOUNT_NAME }}
+          TS_PROFILE:  ${{ vars.TRUSTED_SIGNING_PROFILE_NAME }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $meta = @{
+            Endpoint               = $env:TS_ENDPOINT
+            CodeSigningAccountName = $env:TS_ACCOUNT
+            CertificateProfileName = $env:TS_PROFILE
+          } | ConvertTo-Json
+          New-Item -ItemType Directory -Force -Path ./packaging/msix/azure-signing | Out-Null
+          Set-Content -Path ./packaging/msix/azure-signing/metadata.json -Value $meta -Encoding utf8
+
+      - name: Sign MSIX (Azure Trusted Signing)
+        shell: pwsh
+        env:
+          TS_PUBLISHER: ${{ vars.TRUSTED_SIGNING_PUBLISHER }}
+          MATRIX_ARCH:  ${{ matrix.arch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = $env:MATRIX_ARCH
+          $msix = Get-ChildItem ./packaging/msix/dist/$arch/*.msix |
+                    Where-Object Name -notlike '*signed*' |
+                    Select-Object -First 1
+          if (-not $msix) { throw "No unsigned MSIX to sign in packaging/msix/dist/$arch/" }
+          pwsh ./packaging/msix/sign-msix.ps1 `
+                -MsixPath $msix.FullName `
+                -Mode AzureTrustedSigning `
+                -SigningPublisher $env:TS_PUBLISHER `
+                -TrustedSigningMetadataPath ./packaging/msix/azure-signing/metadata.json
+          if ($LASTEXITCODE -ne 0) { throw "sign-msix.ps1 failed (exit $LASTEXITCODE)" }
+
+      - name: Upload signed MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaltoolkit-msix-${{ matrix.arch }}-signed
+          path: eval-ui-winui3/packaging/msix/dist/${{ matrix.arch }}/signed/*.msix
+          if-no-files-found: error
+
+  # ----------------------------------------------------------------------
+  # Job 3: Publish GitHub release with signed MSIXes attached.
+  # Fails closed if the release already exists — replacing an existing
+  # release would destroy any manually edited notes / assets
+  # (GPT-5.5 slice-35 plan-review NB #10). Manual replace requires
+  # deleting the release via UI then re-tagging.
+  # ----------------------------------------------------------------------
+  publish:
+    name: Publish GitHub release
+    needs: sign
+    if: startsWith(github.ref, 'refs/tags/eval-ui-winui3-v')
+    runs-on: windows-2022
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all signed MSIXes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: evaltoolkit-msix-*-signed
+          path: ./release-artifacts
+
+      - name: Create GitHub release (fail if tag already released)
+        shell: pwsh
+        env:
+          GH_TOKEN:     ${{ github.token }}
+          TAG:          ${{ github.ref_name }}
+          COMMIT_SHA:   ${{ github.sha }}
+          TS_PUBLISHER: ${{ vars.TRUSTED_SIGNING_PUBLISHER }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag    = $env:TAG
+          $title  = "EvalToolkit (WinUI 3) $tag"
+          $msixes = Get-ChildItem ./release-artifacts -Recurse -Filter '*.msix' | ForEach-Object { $_.FullName }
+          if ($msixes.Count -lt 2) {
+            throw "Expected at least 2 MSIXes (x64 + arm64), found $($msixes.Count): $($msixes -join ', ')"
+          }
+          # Adopt slice-35 code-review NB #2: fail closed against ANY
+          # gh failure, not just "release exists". `gh release view`
+          # exits non-zero for "not found" *and* for transient errors
+          # (auth, 5xx, rate limit). Only treat exit-code 0 OR an
+          # explicit "not found" stderr as decisive.
+          $viewOut = & gh release view $tag 2>&1
+          $viewExit = $LASTEXITCODE
+          if ($viewExit -eq 0) {
+            throw "Release '$tag' already exists. Delete it manually via the GitHub UI (or 'gh release delete $tag --yes') and re-run, or push a new tag."
+          }
+          $viewText = ($viewOut | Out-String)
+          if ($viewText -notmatch '(?i)release not found|HTTP 404|not found') {
+            throw "Could not determine whether release '$tag' exists. gh exited $viewExit with: $viewText"
+          }
+          $notes = @"
+          Automated release for $tag.
+
+          Signed via Azure Trusted Signing (Publisher: ``$($env:TS_PUBLISHER)``).
+          Each MSIX is self-contained and includes the .NET runtime + Windows App SDK.
+
+          Install:
+          ``````pwsh
+          Add-AppxPackage -Path EvalToolkit.UI_*_x64.msix
+          ``````
+          "@
+          gh release create $tag `
+                  --target $env:COMMIT_SHA `
+                  --title $title `
+                  --notes $notes `
+                  --latest `
+                  @msixes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create $tag failed (exit $LASTEXITCODE)" }

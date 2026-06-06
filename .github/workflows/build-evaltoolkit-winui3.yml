@@ -28,16 +28,25 @@ on:
       - 'eval-gen/tsconfig.json'
       - '.github/workflows/build-evaltoolkit-winui3.yml'
 
-# Build/test/upload only. Release publishing / signing are added with
-# the phase-C `signing` and `ci-workflow` todos; until then this
-# workflow does not need contents:write.
+# Per slice-35 GPT-5.5 plan-review NB #6: cancel superseded PR runs to
+# keep CI cost predictable. Release runs (release-evaltoolkit-winui3.yml)
+# use cancel-in-progress: false because cancelling mid-sign would be Bad.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Build/test/upload only. Release publishing / signing live in
+# release-evaltoolkit-winui3.yml so this PR-gate workflow does not need
+# contents:write or id-token:write.
 permissions:
   contents: read
 
 jobs:
   build:
     name: Build, test, and package
-    runs-on: windows-latest
+    # Per slice-35 GPT-5.5 plan-review NB #5: pin the runner image so
+    # SDK / runtime / signtool path drift doesn't break CI silently.
+    runs-on: windows-2022
 
     defaults:
       run:
@@ -81,9 +90,47 @@ jobs:
       - name: dotnet test
         run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test-results.trx"
 
-      # MSIX packaging + signing wired in phase C todos `msix-packaging` /
-      # `signing`. Until then, this workflow just gates the engine + parity
-      # ports on every push so divergence from the TS impl is caught early.
+      # Slice 35 ci-workflow: smoke-build the unsigned x64 MSIX on every PR
+      # so packaging regressions surface here instead of waiting for a
+      # tagged release. arm64 + signing live in release-evaltoolkit-winui3.yml
+      # to keep PR runtime down.
+      - name: Build unsigned MSIX (x64 smoke)
+        shell: pwsh
+        run: pwsh ./packaging/msix/build-msix.ps1 -Arch x64
+
+      - name: Verify unsigned MSIX structure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msix = Get-ChildItem ./packaging/msix/dist/x64/*.msix |
+                    Where-Object Name -notlike '*signed*' |
+                    Select-Object -First 1
+          if (-not $msix) { throw 'No unsigned MSIX produced under packaging/msix/dist/x64/' }
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $makeAppx = Get-ChildItem -Path $sdkBin -Filter 'makeappx.exe' -Recurse -ErrorAction SilentlyContinue |
+                        Where-Object FullName -like '*\x64\*' |
+                        Sort-Object { [version](Split-Path (Split-Path $_.FullName -Parent) -Parent | Split-Path -Leaf) } -Descending |
+                        Select-Object -First 1
+          if (-not $makeAppx) { throw "No makeappx.exe found under $sdkBin" }
+          $tmp = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/msix-verify-$([guid]::NewGuid())"
+          & $makeAppx.FullName unpack /p $msix.FullName /d $tmp.FullName /nv | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed (exit $LASTEXITCODE)" }
+          [xml]$mf = Get-Content (Join-Path $tmp.FullName 'AppxManifest.xml') -Raw
+          if ($mf.Package.Identity.ProcessorArchitecture -ne 'x64') {
+            throw "Expected ProcessorArchitecture=x64, got '$($mf.Package.Identity.ProcessorArchitecture)'"
+          }
+          if (-not (Test-Path (Join-Path $tmp.FullName 'EvalToolkit.UI.exe'))) {
+            throw 'EvalToolkit.UI.exe missing at MSIX root'
+          }
+          Write-Host "OK: unsigned MSIX is structurally valid (arch=x64, EXE present)"
+
+      - name: Upload unsigned MSIX (PR diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaltoolkit-msix-x64-unsigned-pr
+          path: eval-ui-winui3/packaging/msix/dist/x64/*.msix
+          if-no-files-found: warn
 
       - name: Upload test results
         if: always()
@@ -92,3 +139,4 @@ jobs:
           name: evaltoolkit-test-results
           path: eval-ui-winui3/**/TestResults/*.trx
           if-no-files-found: warn
+
