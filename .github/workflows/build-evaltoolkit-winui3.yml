@@ -140,3 +140,321 @@ jobs:
           path: eval-ui-winui3/**/TestResults/*.trx
           if-no-files-found: warn
 
+  # ----------------------------------------------------------------------
+  # Slice 36 (ui-smoke-workflow): install the signed MSIX on the runner
+  # and prove it boots end-to-end. Three layers of signal, decreasing
+  # robustness:
+  #   1. Headless `--diagnostics` (REQUIRED) — exercises .NET 10 runtime,
+  #      Windows App SDK, WebView2 detection, tray, jumplist, notifications,
+  #      and MSIX identity. No GUI, no flakiness. Hard fail.
+  #   2. GUI launch + ProcessAlive (REQUIRED, cheap) — catches XAML markup
+  #      errors / App.OnLaunched crashes that diagnostics misses. Hard fail.
+  #   3. WinAppDriver UIA window-title smoke (OPTIONAL) — catches "window
+  #      opens but doesn't render" regressions. continue-on-error: true.
+  # GPT-5.5 slice-36 plan review: 4 BLOCKERs + 10 NBs, all adopted.
+  # ----------------------------------------------------------------------
+  ui-smoke:
+    name: UI smoke (signed MSIX install + diagnostics + GUI + UIA)
+    needs: build
+    runs-on: windows-2022
+    # Code-review NB #2: bound total runtime so a hung Add-AppxPackage,
+    # diagnostics process, or WinAppDriver session cannot consume the
+    # full default 6h job timeout. Generous ceiling — happy path is ~3 min.
+    timeout-minutes: 25
+
+    defaults:
+      run:
+        working-directory: eval-ui-winui3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download unsigned MSIX from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: evaltoolkit-msix-x64-unsigned-pr
+          path: eval-ui-winui3/packaging/msix/dist/x64/
+
+      - name: Self-sign MSIX + trust dev cert
+        shell: pwsh
+        run: |
+          # Plan-review BLOCKER #1: sign-msix.ps1 only imports the cert
+          # into LocalMachine\TrustedPeople when -TrustDevCert is set.
+          # GitHub-hosted windows-2022 runners run elevated, so the
+          # LocalMachine cert store is writable.
+          $ErrorActionPreference = 'Stop'
+          $unsigned = Get-ChildItem ./packaging/msix/dist/x64/*.msix |
+                        Where-Object Name -notlike '*signed*' |
+                        Select-Object -First 1
+          if (-not $unsigned) { throw 'No unsigned MSIX found in dist/x64/.' }
+          $signedDir = Join-Path (Split-Path $unsigned.FullName -Parent) 'signed'
+          New-Item -ItemType Directory -Force -Path $signedDir | Out-Null
+          $signedPath = Join-Path $signedDir $unsigned.Name
+          pwsh ./packaging/msix/sign-msix.ps1 `
+                -MsixPath $unsigned.FullName `
+                -OutputPath $signedPath `
+                -Mode SelfSigned `
+                -TrustDevCert
+          if ($LASTEXITCODE -ne 0) { throw "sign-msix.ps1 failed (exit $LASTEXITCODE)" }
+          if (-not (Test-Path $signedPath)) { throw "Signed MSIX missing at $signedPath" }
+          "SIGNED_MSIX=$signedPath" >> $env:GITHUB_ENV
+
+      - name: Install signed MSIX (with retry for transient failures)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signed = $env:SIGNED_MSIX
+          if (-not $signed) { throw 'SIGNED_MSIX env not set by signing step.' }
+          # Plan-review NB #1: retry only on known-transient HRESULTs;
+          # fail fast on structural / signing / policy issues.
+          $transientHRs = @('0x80073D02', '0x80070020', '0x80073CFB', '0x80073D06', '0x80073CF9')
+          $maxAttempts = 3
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            try {
+              Write-Host "Add-AppxPackage attempt $i/$maxAttempts..." -ForegroundColor Cyan
+              Add-AppxPackage -Path $signed -ForceApplicationShutdown -ErrorAction Stop
+              Write-Host "Install OK on attempt $i." -ForegroundColor Green
+              break
+            } catch {
+              $msg = $_.Exception.Message
+              $isTransient = $false
+              foreach ($hr in $transientHRs) {
+                if ($msg -match [regex]::Escape($hr)) { $isTransient = $true; break }
+              }
+              if ($i -eq $maxAttempts) {
+                Write-Host "Final attempt failed: $msg" -ForegroundColor Red
+                # Best-effort: dump latest AppX deployment log line for diagnosis.
+                try {
+                  Get-AppPackageLog -ErrorAction SilentlyContinue |
+                    Select-Object -First 30 |
+                    Format-Table -AutoSize | Out-String | Write-Host
+                } catch { }
+                throw
+              }
+              if (-not $isTransient) {
+                Write-Host "Non-transient HRESULT in error: $msg — failing fast." -ForegroundColor Red
+                throw
+              }
+              # Special case: 0x80073CFB / 0x80073D06 — conflicting install. Remove and retry.
+              if ($msg -match '0x80073CFB' -or $msg -match '0x80073D06') {
+                Write-Host "Conflicting install detected; removing existing EvalToolkit.UI package before retry." -ForegroundColor Yellow
+                try {
+                  Get-AppxPackage -Name EvalToolkit.UI |
+                    Remove-AppxPackage -ErrorAction SilentlyContinue
+                } catch { }
+              }
+              Write-Host "Transient install failure (will retry): $msg" -ForegroundColor Yellow
+              Start-Sleep -Seconds 10
+            }
+          }
+          # Resolve deterministic AUMID from PackageFamilyName + manifest App id "App".
+          # Plan-review BLOCKER #4: Get-StartApps is fragile immediately after install;
+          # PackageFamilyName + '!App' is deterministic.
+          $pkg = Get-AppxPackage -Name EvalToolkit.UI | Select-Object -First 1
+          if (-not $pkg) { throw 'EvalToolkit.UI package not registered after install.' }
+          $aumid = "$($pkg.PackageFamilyName)!App"
+          $exe = Join-Path $pkg.InstallLocation 'EvalToolkit.UI.exe'
+          if (-not (Test-Path $exe)) { throw "EvalToolkit.UI.exe missing at $exe" }
+          Write-Host "Package family: $($pkg.PackageFamilyName)"
+          Write-Host "AUMID:          $aumid"
+          Write-Host "Install path:   $($pkg.InstallLocation)"
+          "AUMID=$aumid"            >> $env:GITHUB_ENV
+          "INSTALLED_EXE=$exe"      >> $env:GITHUB_ENV
+          "INSTALL_LOCATION=$($pkg.InstallLocation)" >> $env:GITHUB_ENV
+
+      - name: Headless --diagnostics smoke (required)
+        shell: pwsh
+        run: |
+          # Plan-review BLOCKER #2: Start-Process shell:AppsFolder\AUMID
+          # returns a launcher/broker handle, not the real EvalToolkit.UI.exe
+          # PID, so -Wait + ExitCode are unreliable. Launch the installed
+          # exe directly to get the real exit code — this still exercises
+          # the signed/installed MSIX payload.
+          $ErrorActionPreference = 'Stop'
+          $exe = $env:INSTALLED_EXE
+          $diag = Join-Path $env:RUNNER_TEMP 'diag.json'
+          if (Test-Path $diag) { Remove-Item $diag -Force }
+          Write-Host "Launching $exe --diagnostics-out $diag" -ForegroundColor Cyan
+          $proc = Start-Process -FilePath $exe `
+                                -ArgumentList @('--diagnostics-out', $diag) `
+                                -Wait -PassThru -NoNewWindow
+          Write-Host "Process exited with code $($proc.ExitCode)" -ForegroundColor Cyan
+          if (-not (Test-Path $diag)) {
+            throw "Diagnostics did not write $diag (exit $($proc.ExitCode))."
+          }
+          $json = Get-Content $diag -Raw
+          Write-Host '--- DiagnosticsReport JSON ---' -ForegroundColor DarkGray
+          Write-Host $json
+          Write-Host '--- end JSON ---' -ForegroundColor DarkGray
+          $report = $json | ConvertFrom-Json
+          if ($proc.ExitCode -ne 0) {
+            throw "EvalToolkit.UI.exe --diagnostics exited $($proc.ExitCode) (expected 0 for Green/Yellow)."
+          }
+          $health = "$($report.overallHealth)".ToLowerInvariant()
+          if ($health -notin 'green', 'yellow') {
+            $red = $report.probes | Where-Object { "$($_.health)".ToLowerInvariant() -eq 'red' }
+            $redSummary = ($red | ForEach-Object { "$($_.id): $($_.message)" }) -join "`n  "
+            throw "Diagnostics overallHealth=$health (expected green/yellow). Red probes:`n  $redSummary"
+          }
+          Write-Host "Diagnostics OK: overallHealth=$health" -ForegroundColor Green
+
+      - name: GUI launch + ProcessAlive smoke (required)
+        shell: pwsh
+        run: |
+          # Plan-review BLOCKER #3: Start-Process -PassThru returns the
+          # launcher process for shell:AppsFolder activations, so we must
+          # find the real EvalToolkit.UI.exe PID via Win32_Process after
+          # launch. Filter by ExecutablePath under the package InstallLocation
+          # to avoid colliding with any pre-existing instance.
+          $ErrorActionPreference = 'Stop'
+          $aumid = $env:AUMID
+          $installLoc = $env:INSTALL_LOCATION
+          # Snapshot existing PIDs so we ignore them after launch.
+          $beforePids = @(Get-Process -Name EvalToolkit.UI -ErrorAction SilentlyContinue | ForEach-Object Id)
+          Write-Host "Launching shell:AppsFolder\$aumid" -ForegroundColor Cyan
+          Start-Process -FilePath "shell:AppsFolder\$aumid" | Out-Null
+          $deadline = (Get-Date).AddSeconds(30)
+          $appProc = $null
+          do {
+            $candidates = Get-CimInstance Win32_Process -Filter "Name='EvalToolkit.UI.exe'" |
+              Where-Object {
+                $beforePids -notcontains $_.ProcessId -and
+                $_.ExecutablePath -and
+                $_.ExecutablePath.StartsWith($installLoc, [StringComparison]::OrdinalIgnoreCase)
+              }
+            $appProc = $candidates | Select-Object -First 1
+            if ($appProc) { break }
+            Start-Sleep -Seconds 1
+          } while ((Get-Date) -lt $deadline)
+          if (-not $appProc) { throw 'EvalToolkit.UI.exe did not start within 30s of shell:AppsFolder activation.' }
+          Write-Host "App PID: $($appProc.ProcessId) (ExecutablePath: $($appProc.ExecutablePath))" -ForegroundColor Green
+          Start-Sleep -Seconds 15
+          $stillAlive = Get-Process -Id $appProc.ProcessId -ErrorAction SilentlyContinue
+          if (-not $stillAlive) { throw "EvalToolkit.UI.exe (PID $($appProc.ProcessId)) exited during 15s GUI smoke window — likely crashed on startup." }
+          Write-Host "GUI smoke OK: app stayed alive for 15s." -ForegroundColor Green
+          # Code-review NB #3: app may have exited cleanly between the
+          # 15s alive check and this teardown call; do not let that race
+          # fail the required smoke step.
+          Stop-Process -Id $appProc.ProcessId -Force -ErrorAction SilentlyContinue
+          Write-Host 'Tore down GUI process.' -ForegroundColor DarkGray
+
+      - name: WinAppDriver UIA window-title smoke (optional)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          # Plan-review NB #6 + #7: WinAppDriver is legacy/brittle on
+          # modern images; gate every external call with a timeout.
+          # Plan-review NB #5: capability is AUMID, not shell:AppsFolder\AUMID.
+          # Code-review NB #1: WinAppDriver started with no args listens
+          # at the ROOT (http://127.0.0.1:4723/), not /wd/hub. Also skip
+          # MSI install if the exe is already present on the image.
+          $ErrorActionPreference = 'Stop'
+          $aumid = $env:AUMID
+          $wad = 'C:\Program Files (x86)\Windows Application Driver\WinAppDriver.exe'
+          if (Test-Path $wad) {
+            Write-Host "WinAppDriver already installed at $wad — skipping MSI." -ForegroundColor DarkGray
+          } else {
+            $msiUrl = 'https://github.com/microsoft/WinAppDriver/releases/download/v1.2.1/WindowsApplicationDriver_1.2.1.msi'
+            $msiPath = Join-Path $env:RUNNER_TEMP 'WinAppDriver.msi'
+            Write-Host "Downloading WinAppDriver MSI..." -ForegroundColor Cyan
+            Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -TimeoutSec 60
+            Write-Host "Installing WinAppDriver MSI (timeout 120s)..." -ForegroundColor Cyan
+            $msiArgs = @('/i', $msiPath, '/quiet', '/norestart', '/log', (Join-Path $env:RUNNER_TEMP 'wad-install.log'))
+            $msiProc = Start-Process -FilePath msiexec.exe -ArgumentList $msiArgs -PassThru
+            if (-not $msiProc.WaitForExit(120000)) {
+              $msiProc | Stop-Process -Force -ErrorAction SilentlyContinue
+              throw 'WinAppDriver MSI install hung past 120s.'
+            }
+            if ($msiProc.ExitCode -ne 0) { throw "WinAppDriver MSI install exit $($msiProc.ExitCode)." }
+            if (-not (Test-Path $wad)) { throw "WinAppDriver.exe not found at $wad after install." }
+          }
+          Write-Host "Starting WinAppDriver service..." -ForegroundColor Cyan
+          $wadProc = Start-Process -FilePath $wad -PassThru
+          "WAD_PID=$($wadProc.Id)" >> $env:GITHUB_ENV
+          # Poll until WAD answers on 127.0.0.1:4723, max 30s.
+          $deadline = (Get-Date).AddSeconds(30)
+          $up = $false
+          do {
+            try {
+              $r = Invoke-WebRequest -Uri 'http://127.0.0.1:4723/status' -TimeoutSec 2 -UseBasicParsing
+              if ($r.StatusCode -eq 200) { $up = $true; break }
+            } catch { Start-Sleep -Milliseconds 500 }
+          } while ((Get-Date) -lt $deadline)
+          if (-not $up) { throw 'WinAppDriver did not become responsive on 127.0.0.1:4723 within 30s.' }
+          Write-Host "WinAppDriver is up. Opening session..." -ForegroundColor Green
+          $body = @{ desiredCapabilities = @{ app = $aumid } } | ConvertTo-Json -Compress
+          $session = Invoke-RestMethod -Uri 'http://127.0.0.1:4723/session' -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 30
+          $sid = $session.sessionId
+          if (-not $sid) { throw "WinAppDriver session response missing sessionId: $($session | ConvertTo-Json -Compress)" }
+          try {
+            $title = (Invoke-RestMethod -Uri "http://127.0.0.1:4723/session/$sid/title" -Method Get -TimeoutSec 15).value
+            Write-Host "Window title: '$title'" -ForegroundColor Green
+            if ([string]::IsNullOrWhiteSpace($title)) { throw 'Window title is empty.' }
+            if ($title -notmatch '(?i)EvalToolkit') { throw "Window title '$title' does not contain 'EvalToolkit'." }
+            Write-Host "WinAppDriver UIA smoke OK." -ForegroundColor Green
+          } finally {
+            try { Invoke-RestMethod -Uri "http://127.0.0.1:4723/session/$sid" -Method Delete -TimeoutSec 10 | Out-Null } catch { }
+          }
+
+      - name: Cleanup (always)
+        if: always()
+        shell: pwsh
+        run: |
+          # Plan-review NB #3: each cleanup substep in its own try/catch
+          # so one failure doesn't block the others.
+          $ErrorActionPreference = 'Continue'
+          # 1. Stop any leftover app processes.
+          try {
+            Get-Process -Name EvalToolkit.UI -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                Write-Host "Stopping leftover EvalToolkit.UI PID $($_.Id)" -ForegroundColor DarkGray
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+              }
+          } catch { Write-Warning "Process stop failed: $_" }
+          # 2. Stop WinAppDriver if running.
+          try {
+            if ($env:WAD_PID) {
+              Stop-Process -Id $env:WAD_PID -Force -ErrorAction SilentlyContinue
+            }
+            Get-Process -Name WinAppDriver -ErrorAction SilentlyContinue |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+          } catch { Write-Warning "WAD stop failed: $_" }
+          # 3. Remove the MSIX package.
+          try {
+            Get-AppxPackage -Name EvalToolkit.UI -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                Write-Host "Removing AppX package $($_.PackageFullName)" -ForegroundColor DarkGray
+                Remove-AppxPackage -Package $_.PackageFullName -ErrorAction SilentlyContinue
+              }
+          } catch { Write-Warning "AppX remove failed: $_" }
+          # 4. Remove the dev cert from LocalMachine\TrustedPeople by thumbprint
+          #    (plan-review NB #2: thumbprint, not subject).
+          try {
+            $signed = $env:SIGNED_MSIX
+            if ($signed -and (Test-Path $signed)) {
+              $sig = Get-AuthenticodeSignature -FilePath $signed
+              $thumb = $sig.SignerCertificate.Thumbprint
+              if ($thumb) {
+                $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+                  [System.Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
+                  [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                try {
+                  $match = $store.Certificates | Where-Object Thumbprint -eq $thumb
+                  foreach ($c in $match) {
+                    Write-Host "Removing trusted dev cert $thumb" -ForegroundColor DarkGray
+                    $store.Remove($c)
+                  }
+                } finally { $store.Close() }
+              }
+            }
+          } catch { Write-Warning "Cert cleanup failed: $_" }
+
+      - name: Upload diagnostics JSON (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-diagnostics
+          path: ${{ runner.temp }}/diag.json
+          if-no-files-found: warn
+
