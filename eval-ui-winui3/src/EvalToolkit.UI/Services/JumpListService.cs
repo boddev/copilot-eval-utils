@@ -69,6 +69,9 @@ public sealed class JumpListService : IJumpListService
     private bool _scoreSubscribed;
     private bool _refreshPending;
     private bool _disposed;
+    private bool _initialized;
+    private bool _lastRefreshSucceeded;
+    private DateTimeOffset? _lastRefreshUtc;
 
     public JumpListService(
         IJobsRepository repository,
@@ -98,6 +101,22 @@ public sealed class JumpListService : IJumpListService
             _scoreJobs.JobStateChanged += OnJobStateChanged;
             _scoreSubscribed = true;
         }
+        lock (_gate) { _initialized = true; }
+    }
+
+    public bool Initialized
+    {
+        get { lock (_gate) { return _initialized; } }
+    }
+
+    public bool LastRefreshSucceeded
+    {
+        get { lock (_gate) { return _lastRefreshSucceeded; } }
+    }
+
+    public DateTimeOffset? LastRefreshUtc
+    {
+        get { lock (_gate) { return _lastRefreshUtc; } }
     }
 
     public Task RefreshAsync(CancellationToken cancellationToken = default)
@@ -112,6 +131,69 @@ public sealed class JumpListService : IJumpListService
         // not delay shell paint by a synchronous COM round-trip).
         _uiDispatcher.TryEnqueue(RefreshCore);
         return Task.CompletedTask;
+    }
+
+    public Task<bool> RefreshAndWaitAsync(CancellationToken cancellationToken = default)
+    {
+        // GPT-5.5 slice-diagnostics plan-review BLOCKER #2: diagnostics
+        // needs to await the actual COM result, not just enqueue.
+        // Bridge the dispatcher-driven RefreshCore through a TCS.
+        if (_disposed) return Task.FromResult(false);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // GPT-5.5 slice-32 code-review non-blocker #3: register the
+        // CancellationToken so callers can break out if the UI
+        // dispatcher accepts the enqueue but shuts down before the
+        // lambda runs (e.g. during app teardown). Without this the
+        // diagnostics refresh could hang forever.
+        CancellationTokenRegistration ctr = default;
+        if (cancellationToken.CanBeCanceled)
+        {
+            ctr = cancellationToken.Register(static state =>
+            {
+                var t = (TaskCompletionSource<bool>)state!;
+                t.TrySetCanceled();
+            }, tcs);
+        }
+        // Dispose the registration when the task completes (any state)
+        // so we don't leak it on long-lived tokens.
+        _ = tcs.Task.ContinueWith(static (_, state) =>
+        {
+            ((CancellationTokenRegistration)state!).Dispose();
+        }, ctr, TaskScheduler.Default);
+
+        bool queued = _uiDispatcher.TryEnqueue(() =>
+        {
+            try
+            {
+                bool ok = RefreshCoreReportingSuccess();
+                tcs.TrySetResult(ok);
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        });
+
+        if (!queued)
+        {
+            // Dispatcher not running (e.g. headless --diagnostics path
+            // hasn't created a UI thread). Run inline on the caller
+            // thread so we still capture a real success/failure result.
+            try
+            {
+                bool ok = RefreshCoreReportingSuccess();
+                tcs.TrySetResult(ok);
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        }
+
+        return tcs.Task;
     }
 
     public void Dispose()
@@ -182,10 +264,23 @@ public sealed class JumpListService : IJumpListService
 
     private void RefreshCore()
     {
-        if (_disposed) return;
+        _ = RefreshCoreReportingSuccess();
+    }
+
+    private bool RefreshCoreReportingSuccess()
+    {
+        if (_disposed) return false;
+        bool ok;
         try
         {
-            BuildJumpList();
+            // GPT-5.5 slice-32 code-review BLOCKER #1: take the actual
+            // success bool from BuildJumpList. The previous version
+            // returned true as long as BuildJumpList didn't throw,
+            // even when BeginList / CommitList failed (the function
+            // swallows COM HRESULT failures internally and only logs).
+            // Diagnostics could then report `jumpList.health = green`
+            // for a refresh the shell actually rejected.
+            ok = BuildJumpList();
         }
         catch (Exception ex)
         {
@@ -193,10 +288,17 @@ public sealed class JumpListService : IJumpListService
             // when the shell COM service is unavailable. The app must
             // keep working; the jump list is a nice-to-have.
             Debug.WriteLine($"JumpListService.RefreshCore: {ex}");
+            ok = false;
         }
+        lock (_gate)
+        {
+            _lastRefreshSucceeded = ok;
+            _lastRefreshUtc = DateTimeOffset.UtcNow;
+        }
+        return ok;
     }
 
-    private void BuildJumpList()
+    private bool BuildJumpList()
     {
         IReadOnlyList<JobSummary> recent;
         try
@@ -221,7 +323,7 @@ public sealed class JumpListService : IJumpListService
         {
             Debug.WriteLine("JumpListService: CDestinationList does not implement ICustomDestinationList.");
             if (destObj is not null) Marshal.ReleaseComObject(destObj);
-            return;
+            return false;
         }
 
         bool committed = false;
@@ -237,7 +339,7 @@ public sealed class JumpListService : IJumpListService
             if (hr < 0)
             {
                 Debug.WriteLine($"JumpListService: BeginList failed 0x{hr:X8}");
-                return;
+                return false;
             }
 
             // User tasks: New evaluation
@@ -301,10 +403,12 @@ public sealed class JumpListService : IJumpListService
             // failed CommitList leaves the build transaction active,
             // so let the finally call AbortList to release it.
             committed = commitHr >= 0;
+            return committed;
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"JumpListService.BuildJumpList: {ex}");
+            return false;
         }
         finally
         {

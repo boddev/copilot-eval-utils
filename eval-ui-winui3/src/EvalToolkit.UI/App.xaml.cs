@@ -33,6 +33,8 @@ public partial class App : Application
     public IJumpListService JumpList { get; private set; } = null!;
     public IFileActivationRouter Router { get; private set; } = null!;
     public INotificationActionRouter NotificationRouter { get; private set; } = null!;
+    public IDiagnosticsService DiagnosticsService { get; private set; } = null!;
+    public DiagnosticsViewModel? Diagnostics { get; private set; }
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -137,6 +139,18 @@ public partial class App : Application
             UiDispatcher);
         JumpList.Initialize(JobService, ScoreService);
         _ = JumpList.RefreshAsync();
+
+        // Slice 32 (winui-diagnostics): construct the live diagnostics
+        // service AFTER Tray and JumpList so the GUI report reflects
+        // the actual running state of those subsystems rather than
+        // headless probe results.
+        DiagnosticsService = new DiagnosticsService(
+            WorkspaceRoot,
+            JumpListService.DefaultAppId,
+            WebView2Runtime,
+            Tray,
+            JumpList);
+        Diagnostics = new DiagnosticsViewModel(DiagnosticsService);
 
         // Slice 30: file-type-association routing. Owns the dispatch
         // logic from "an MSIX FTA fired" or "--open-file <path> was

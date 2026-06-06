@@ -98,4 +98,12 @@ public interface ITrayIconService : IDisposable
     /// 28; a future settings slice can persist the suppression flag.
     /// </summary>
     void ShowFirstHideHint();
+
+    /// <summary>
+    /// True iff <see cref="Microsoft.Windows.AppNotifications.AppNotificationManager.Register"/>
+    /// has been called successfully. False in unpackaged dev runs where
+    /// the WAS notification registration is unavailable. Read by the
+    /// diagnostics view to classify notification health.
+    /// </summary>
+    bool IsNotificationsRegistered { get; }
 }

@@ -59,6 +59,10 @@ public sealed partial class MainShell : Page
         // the wizard lives inside MainShell's ContentFrame.
         App.Current.Navigation.Rebind(ContentFrame);
         App.Current.Navigation.Register("Wizard", typeof(WizardView));
+        // Slice 32 (winui-diagnostics) NON-BLOCKER #10: register the
+        // diagnostics route alongside the wizard so the footer button
+        // can simply `NavigateTo("Diagnostics")`.
+        App.Current.Navigation.Register("Diagnostics", typeof(DiagnosticsView));
         App.Current.Navigation.NavigateTo(typeof(WizardView));
 
         // Slice 29 (GPT-5.5 code review BLOCKER #2): drain verbs that
@@ -107,5 +111,10 @@ public sealed partial class MainShell : Page
             menu.ShowAt(fe, e.GetPosition(fe));
             e.Handled = true;
         }
+    }
+
+    private void DiagnosticsButton_Click(object sender, RoutedEventArgs e)
+    {
+        App.Current.Navigation.NavigateTo("Diagnostics");
     }
 }

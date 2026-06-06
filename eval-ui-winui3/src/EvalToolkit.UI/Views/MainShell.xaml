@@ -17,7 +17,7 @@
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,1,0">
-            <Grid RowDefinitions="Auto,*,Auto">
+            <Grid RowDefinitions="Auto,*,Auto,Auto">
 
                 <Grid Grid.Row="0" Padding="16,12" ColumnDefinitions="*,Auto">
                     <TextBlock Grid.Column="0"
@@ -73,6 +73,21 @@
                            FontSize="12"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            Visibility="Collapsed"/>
+
+                <Border Grid.Row="3"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="0,1,0,0"
+                        Padding="12,8">
+                    <Button x:Name="DiagnosticsButton"
+                            HorizontalAlignment="Stretch"
+                            Click="DiagnosticsButton_Click"
+                            ToolTipService.ToolTip="Open the diagnostics view">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE9F5;" FontSize="14"/>
+                            <TextBlock Text="Diagnostics"/>
+                        </StackPanel>
+                    </Button>
+                </Border>
 
             </Grid>
         </Border>

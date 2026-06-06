@@ -26,7 +26,30 @@ public interface IJumpListService : IDisposable
     /// Rebuild the jump list now. Marshals onto the UI thread (the
     /// shell COM APIs require an STA dispatcher); returns the task
     /// that completes once the rebuild has been enqueued (does not
-    /// wait for COM to finish).
+    /// wait for COM to finish). Fire-and-forget for job-event callers
+    /// that should not block on COM.
     /// </summary>
     Task RefreshAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Rebuild the jump list now AND wait for the COM rebuild to
+    /// finish. Returns <c>true</c> if the rebuild succeeded,
+    /// <c>false</c> if <see cref="JumpList.SaveAsync"/> threw or COM
+    /// state was unavailable. Used by the diagnostics service to
+    /// produce an actionable green/yellow signal — GPT-5.5
+    /// slice-diagnostics plan-review BLOCKER #2.
+    /// </summary>
+    Task<bool> RefreshAndWaitAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>True once <see cref="Initialize"/> has been called.</summary>
+    bool Initialized { get; }
+
+    /// <summary>
+    /// Outcome of the most recent rebuild attempt. <c>false</c> until
+    /// the first refresh completes.
+    /// </summary>
+    bool LastRefreshSucceeded { get; }
+
+    /// <summary>UTC timestamp of the most recent rebuild attempt (success or failure).</summary>
+    DateTimeOffset? LastRefreshUtc { get; }
 }

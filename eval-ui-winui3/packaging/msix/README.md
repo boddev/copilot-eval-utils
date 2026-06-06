@@ -247,3 +247,119 @@ exercised by any toast  paths outside the workspace root are
 rejected even in unpackaged dev. See `Smoke.ps1 -OpenFile` (slice 30)
 for related coverage; slice 32 will add a packaged-app toast-click
 manual smoke checklist.
+
+
+---
+
+## Slice 32: `--diagnostics` CLI verb
+
+Slice 32 (`winui-diagnostics`) ships an in-app Diagnostics view plus a
+headless `--diagnostics` verb that runs the same probes from CI without
+launching the WinUI shell. The verb is dispatched **before**
+single-instance arbitration, so running it never disturbs a primary
+GUI instance.
+
+### Usage
+
+Two output modes — both produce identical camelCase JSON:
+
+**File mode (recommended for CI).** Writes the report to a file,
+independent of any console capture quirks. Works from any host (pwsh,
+cmd, detached service, scheduled task):
+
+```pwsh
+EvalToolkit.UI.exe --diagnostics --diagnostics-out C:\path\to\diag.json
+$report = Get-Content C:\path\to\diag.json -Raw | ConvertFrom-Json
+```
+
+Equivalent forms accepted: `--diagnostics-out=<path>`,
+`/diagnostics-out <path>`, `/diagnostics-out=<path>`. Relative paths
+are resolved against the current working directory. Missing parent
+directories are created.
+
+**Stdout mode (interactive use).** Writes JSON to the parent console,
+captured by standard shell redirect:
+
+```cmd
+EvalToolkit.UI.exe --diagnostics > diag.json
+```
+
+```pwsh
+# pwsh: use Start-Process -Wait or cmd, because `& exe` does not block
+# on WinExe binaries.
+Start-Process -FilePath EvalToolkit.UI.exe -ArgumentList @('--diagnostics') `
+  -RedirectStandardOutput diag.json -Wait
+```
+
+Internally the runner calls `AttachConsole(ATTACH_PARENT_PROCESS)` only
+when no inherited stdout handle is present, so cmd's `> file` redirect
+(which preassigns stdout to the file handle) is preserved.
+
+### Output schema
+
+```jsonc
+{
+  "generatedAtUtc": "2026-06-06T14:07:08.7657245+00:00",
+  "appVersion": "1.0.0.0",
+  "workspace": {
+    "path": "...",
+    "exists": true, "writable": true, "creatable": false,
+    "health": "green|yellow|red",
+    "note": null
+  },
+  "webView2": {
+    "runtimeAvailable": true,
+    "bundledInstallerPresent": false,
+    "bundledInstallerPath": "...",
+    "manualInstallerUrl": "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+    "health": "green|yellow|red",
+    "note": null
+  },
+  "notifications": {
+    "registered": false,
+    "health": "green|yellow|red",
+    "note": "..."
+  },
+  "jumpList": {
+    "initialized": false,
+    "lastRefreshSucceeded": false,
+    "lastRefreshUtc": null,
+    "health": "green|yellow|red",
+    "note": "..."
+  },
+  "process": {
+    "pid": 13124,
+    "exePath": "...",
+    "configuredAumid": "EvalToolkit.UI",
+    "actualAumid": null,
+    "aumidError": "GetCurrentProcessExplicitAppUserModelID hr=0x80004005",
+    "health": "green"
+  },
+  "overallHealth": "green|yellow|red"
+}
+```
+
+`overallHealth` is the **worst-of** any section's health. In an
+unpackaged dev build the report is typically `yellow` because
+notifications register lazily (requires package identity) and the
+headless probe never initializes the jump list. The packaged MSIX
+build resolves both to `green`.
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| 0    | `overallHealth` is `green` or `yellow` (no blocking failures). |
+| 1    | `overallHealth` is `red` (workspace unwritable, WebView2 missing with no bootstrapper, etc.). |
+| 2    | The diagnostics collector itself threw. Error JSON written to stderr (and the `--diagnostics-out` file, if specified). |
+
+### Why the verb dispatches before single-instance arbitration
+
+`AppInstance.FindOrRegisterForKey` always returns the existing primary
+when one is already running, so a secondary invocation that reached
+that line would redirect activation to the GUI and exit without
+emitting JSON. Slice 32 detects `--diagnostics` in `Program.Main`
+before calling `FindOrRegisterForKey`, runs `HeadlessDiagnosticsRunner`
+inline, and returns — `Application.Start` is never called, the GUI is
+not affected, and the existing primary continues running undisturbed.
+

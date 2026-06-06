@@ -45,6 +45,23 @@ internal static class Program
     {
         try
         {
+            // Slice 32 (winui-diagnostics) BLOCKER #1 from GPT-5.5
+            // plan review: detect `--diagnostics` BEFORE single-instance
+            // arbitration. Otherwise a secondary process invoked with
+            // `--diagnostics` would redirect to the primary GUI and
+            // exit without writing JSON, leaving CI smoke pipelines
+            // with no output. The headless runner does NOT call
+            // Application.Start; it probes subsystems directly and
+            // exits.
+            if (IsDiagnosticsInvocation(args))
+            {
+                ComWrappersSupport.InitializeComWrappers();
+                return EvalToolkit.UI.Services.HeadlessDiagnosticsRunner
+                    .RunAsync(args)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+
             // Slice 29 (winui-native-plus-jumplist): set the explicit
             // AppUserModelID BEFORE any window is shown so the unpackaged
             // EvalToolkit.UI process gets a stable taskbar identity that
@@ -94,6 +111,21 @@ internal static class Program
             }
             return 1;
         }
+    }
+
+    private static bool IsDiagnosticsInvocation(string[] args)
+    {
+        if (args is null || args.Length == 0) return false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            string a = args[i];
+            if (string.Equals(a, "--diagnostics", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(a, "/diagnostics", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

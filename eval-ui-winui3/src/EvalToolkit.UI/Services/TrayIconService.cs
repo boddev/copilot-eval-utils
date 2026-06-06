@@ -134,6 +134,11 @@ public sealed class TrayIconService : ITrayIconService
         get { lock (_gate) { return _isExiting; } }
     }
 
+    public bool IsNotificationsRegistered
+    {
+        get { lock (_gate) { return _notificationsRegistered; } }
+    }
+
     public event EventHandler? ExitRequested;
 
     public void Initialize(Window shellWindow)
