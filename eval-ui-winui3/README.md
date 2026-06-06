@@ -47,6 +47,12 @@ releases.
 **Uninstalling:** Settings → Apps → Apps & features (Windows 10) /
 Installed apps (Windows 11) → EvalToolkit → Uninstall.
 
+**More documentation:** see [`docs/`](docs/README.md) for the
+[user guide](docs/user-guide.md),
+[CLI reference](docs/cli-reference.md),
+[troubleshooting](docs/troubleshooting.md), and
+[file formats](docs/file-formats.md).
+
 ## Develop
 
 ### Project layout
@@ -81,6 +87,11 @@ dotnet test
 
 The first test run is slower because the parity harness installs and
 restores the `eval-gen` Node project on demand.
+
+For full build / packaging / signing / release instructions see
+[`docs/developer-guide.md`](docs/developer-guide.md). For the
+repo-admin one-time Trusted Signing setup see
+[`docs/ci-release-setup.md`](docs/ci-release-setup.md).
 
 ### CI / release pipelines
 
