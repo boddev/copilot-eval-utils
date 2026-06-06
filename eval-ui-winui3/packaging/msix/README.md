@@ -463,6 +463,18 @@ identical (per GPT-5.5 slice-34 plan review BLOCKER #2).
 
 ### Quickstart — local dev sideload
 
+The fastest path is `install-locally.ps1` — a self-elevating one-shot
+that picks the most recent host-arch signed MSIX, trusts the dev cert,
+installs the package, and verifies. Run from a normal (non-elevated)
+PowerShell — it prompts for UAC itself:
+
+```pwsh
+pwsh .\packaging\msix\install-locally.ps1
+```
+
+If you need finer control, drive `sign-msix.ps1` directly (note: the
+trust + install steps require an elevated terminal):
+
 ```pwsh
 # Sign without trusting (smoke check signature attaches):
 pwsh .\packaging\msix\sign-msix.ps1 `

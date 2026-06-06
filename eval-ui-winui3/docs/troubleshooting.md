@@ -11,11 +11,25 @@ certificate is not in `LocalMachine\TrustedPeople`. Production
 releases published to the GitHub Releases page are signed via Azure
 Trusted Signing and should not produce this error.
 
-For developer builds:
+For developer builds, the easiest path is the self-elevating helper:
 
 ```powershell
-# From an elevated PowerShell prompt
-.\eval-ui-winui3\packaging\msix\sign-msix.ps1 -Mode SelfSigned -TrustDevCert
+# From a normal (non-elevated) PowerShell — UAC prompt fires for you:
+.\eval-ui-winui3\packaging\msix\install-locally.ps1
+```
+
+`install-locally.ps1` picks the most recent signed MSIX for your host
+architecture, trusts the dev cert in `Cert:\LocalMachine\TrustedPeople`,
+runs `Add-AppxPackage -ForceApplicationShutdown`, and verifies.
+
+If you'd rather drive the steps manually (e.g. to install a specific
+file or capture intermediate output), run the underlying signer
+script from an **already-elevated** PowerShell instead:
+
+```powershell
+.\eval-ui-winui3\packaging\msix\sign-msix.ps1 `
+    -MsixPath <path-to-signed.msix> `
+    -Mode SelfSigned -TrustDevCert -VerifyInstall
 ```
 
 For PR-gate artifacts you downloaded from a workflow run, install
@@ -175,3 +189,31 @@ missing-dependency error from App Installer:
 3. As a fallback, install via `Add-AppxPackage` directly from
    PowerShell — it produces a clearer error message than App
    Installer when something is wrong.
+
+## "I can't find the portable EvalToolkit.UI.exe"
+
+There is no portable WinUI 3 GUI build. The only portable
+distribution under `packaging/portable/dist/` is the
+**CLI bundle** containing three single-file shims:
+
+- `EvalToolkit.Cli.exe` — full CLI front-door with `eval-gen` and
+  `eval-score` subcommands.
+- `eval-gen-native.exe` — eval-gen, direct entry point.
+- `eval-score-native.exe` — eval-score, direct entry point.
+
+All three run from any directory with no install. None of them open
+a window — they are command-line tools. Run them from a PowerShell
+prompt:
+
+```powershell
+.\EvalToolkit.Cli.exe --help
+.\eval-gen-native.exe --help
+.\eval-score-native.exe --help
+```
+
+The WinUI 3 GUI requires MSIX packaging (file associations, COM
+toast activator, package-identity jump list) and is not distributed
+as a standalone executable. Install the MSIX instead — see
+[user-guide.md → Installing](user-guide.md) or the production
+release at https://github.com/boddev/copilot-eval-utils/releases.
+

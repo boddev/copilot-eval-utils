@@ -130,7 +130,23 @@ sets up automatically. See [ci-release-setup.md](ci-release-setup.md).
 
 ## Local end-to-end smoke
 
-To exercise the full installed-MSIX path locally:
+For routine "I just want to try the app on my own machine" the fastest
+path is the self-elevating one-shot helper. From a normal (non-elevated)
+PowerShell:
+
+```powershell
+.\packaging\msix\build-msix.ps1 -Configuration Release -Arch x64
+.\packaging\msix\sign-msix.ps1 -MsixPath .\packaging\msix\dist\x64\EvalToolkit.UI_0.1.0.0_x64.msix -Mode SelfSigned
+.\packaging\msix\install-locally.ps1
+```
+
+`install-locally.ps1` picks the most recent signed MSIX matching your
+host architecture, prompts UAC, imports the dev cert into
+`LocalMachine\TrustedPeople`, runs `Add-AppxPackage
+-ForceApplicationShutdown`, and prints the resulting package entry.
+
+To run each step manually instead (e.g. to capture intermediate
+output or pin a specific MSIX):
 
 ```powershell
 # 1. Build

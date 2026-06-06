@@ -487,7 +487,16 @@ if (-not (Test-Path $MsixPath)) {
 $MsixPath = (Resolve-Path $MsixPath).Path
 
 if (-not $OutputPath) {
-    $signedDir = Join-Path (Split-Path $MsixPath -Parent) 'signed'
+    $parentDir = Split-Path $MsixPath -Parent
+    # If the input is already under a `signed` directory, write next to
+    # it (overwriting in place) instead of nesting `signed/signed/`. Same
+    # safeguard if the script is re-invoked on its own output.
+    if ((Split-Path $parentDir -Leaf) -ieq 'signed') {
+        $signedDir = $parentDir
+    }
+    else {
+        $signedDir = Join-Path $parentDir 'signed'
+    }
     $OutputPath = Join-Path $signedDir ([System.IO.Path]::GetFileName($MsixPath))
 }
 if (-not (Test-Path (Split-Path $OutputPath -Parent))) {
