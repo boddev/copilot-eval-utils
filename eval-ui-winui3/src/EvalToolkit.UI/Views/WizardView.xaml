@@ -555,8 +555,45 @@
                                     BorderThickness="1"
                                     MinHeight="360"
                                     Padding="0">
-                                <controls:WebView2 x:Name="ReportWebView"
-                                                   NavigationStarting="ReportWebView_NavigationStarting"/>
+                                <Grid>
+                                    <controls:WebView2 x:Name="ReportWebView"
+                                                       NavigationStarting="ReportWebView_NavigationStarting"/>
+                                    <!-- Slice 27: native XAML fallback when WebView2 runtime is missing.
+                                         Per GPT-5.5 review, rendering an error HTML into the same WebView2
+                                         control would also fail, so we collapse the WebView2 and show
+                                         a real XAML surface that gives the user a working escape hatch.
+                                         Visibility is driven from code-behind, not bound to a VM. -->
+                                    <Border x:Name="WebView2FallbackPanel"
+                                            Background="{ThemeResource LayerOnAcrylicFillColorDefaultBrush}"
+                                            Padding="16"
+                                            Visibility="Collapsed">
+                                        <StackPanel Spacing="10" VerticalAlignment="Center">
+                                            <TextBlock Style="{StaticResource SubtitleTextBlockStyle}"
+                                                       Text="WebView2 Runtime required" />
+                                            <TextBlock TextWrapping="Wrap"
+                                                       Text="The Microsoft Edge WebView2 Runtime isn't installed on this machine, so the rendered report can't be shown inline. The report is still on disk and opens fine in any markdown viewer." />
+                                            <TextBlock x:Name="WebView2FallbackStatus"
+                                                       TextWrapping="Wrap"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="WebView2InstallButton"
+                                                        Style="{StaticResource AccentButtonStyle}"
+                                                        Click="WebView2InstallButton_Click"
+                                                        Content="Install WebView2 (recommended)" />
+                                                <Button x:Name="WebView2OpenManualButton"
+                                                        Click="WebView2OpenManualButton_Click"
+                                                        Content="Get installer" />
+                                                <Button x:Name="WebView2RetryButton"
+                                                        Click="WebView2RetryButton_Click"
+                                                        Content="Retry inline view"
+                                                        ToolTipService.ToolTip="After installing WebView2 externally, click to re-check and re-render the report inline." />
+                                                <Button x:Name="WebView2OpenReportFromFallbackButton"
+                                                        Click="WebView2OpenReportFromFallbackButton_Click"
+                                                        Content="Open report (.md)" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
                             </Border>
 
                             <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"

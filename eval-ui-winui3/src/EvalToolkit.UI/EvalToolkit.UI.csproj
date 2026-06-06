@@ -75,4 +75,19 @@
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>
 
+  <!--
+    Slice 27 webview2-bootstrap — conditionally bundle the WebView2
+    Evergreen Bootstrapper. The binary is owned by Microsoft and rolls
+    forward; the production CI step downloads it before publish and
+    drops it at Assets\webview2\MicrosoftEdgeWebview2Setup.exe. Dev
+    builds without the file still compile; the WizardView fallback
+    panel detects the missing binary at runtime and falls back to the
+    public fwlink. See src\EvalToolkit.UI\Assets\webview2\README.md.
+  -->
+  <ItemGroup>
+    <Content Include="Assets\webview2\MicrosoftEdgeWebview2Setup.exe"
+             Condition="Exists('Assets\webview2\MicrosoftEdgeWebview2Setup.exe')"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

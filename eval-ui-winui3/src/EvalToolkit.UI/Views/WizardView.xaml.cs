@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Threading;
 using System.Threading.Tasks;
 using EvalToolkit.UI.Models;
 using EvalToolkit.UI.Services;
@@ -51,19 +52,62 @@ public sealed partial class WizardView : Page
         ViewModel.Score.PropertyChanged += OnScoreVmPropertyChanged;
     }
 
+    // Slice 27: render generation counter so a stale render that
+    // resolves after a newer ReportHtml has arrived doesn't overwrite
+    // the latest HTML in the WebView2. Reentrancy on the install
+    // button itself is guarded by IsEnabled in the click handler.
+    private long _renderGeneration;
+
     private async void OnScoreVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName != nameof(ScoreViewModel.ReportHtml)) return;
+        // Delegate to the shared render path so install/retry can also
+        // re-render the current HTML without re-firing PropertyChanged.
+        await RenderCurrentReportHtmlAsync().ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Render the current <see cref="ScoreViewModel.ReportHtml"/> into
+    /// the WebView2, falling back to the native XAML pane when the
+    /// WebView2 Runtime is missing. Re-entrant: a generation counter
+    /// drops stale renders if a newer one starts while this one is
+    /// awaiting. Idempotent — safe to call from event handlers, the
+    /// install success path, and any future retry button.
+    /// </summary>
+    private async Task RenderCurrentReportHtmlAsync()
+    {
         string? html = ViewModel.Score.ReportHtml;
         if (string.IsNullOrEmpty(html))
         {
             return;
         }
+        long myGen = Interlocked.Increment(ref _renderGeneration);
         try
         {
+            // Detect runtime BEFORE EnsureCoreWebView2Async (which would
+            // throw an unhelpful loader exception when the runtime is
+            // missing). Falls back to a XAML panel when the runtime is
+            // absent (per GPT-5.5 slice-27 review — blocker on showing
+            // RenderError HTML in a non-functional WebView2 control).
+            bool runtimeOk = await App.Current.WebView2Runtime
+                .IsRuntimeAvailableAsync()
+                .ConfigureAwait(true);
+            // Drop stale renders: if a newer ReportHtml event has
+            // already arrived while we were awaiting, let it own
+            // the WebView2.
+            if (myGen != Interlocked.Read(ref _renderGeneration)) return;
+            if (!runtimeOk)
+            {
+                ShowWebView2Fallback();
+                return;
+            }
+
+            HideWebView2Fallback();
             // EnsureCoreWebView2Async is a no-op after the first call; safe to
             // invoke on every render. Required because WebView2 lazy-initializes.
             await ReportWebView.EnsureCoreWebView2Async();
+            // Re-check generation after the (slower) Ensure call.
+            if (myGen != Interlocked.Read(ref _renderGeneration)) return;
             // No flag toggle needed — NavigateToString always navigates the
             // document to about:blank, which is the only URI the
             // NavigationStarting handler permits (see ReportWebView_NavigationStarting).
@@ -72,7 +116,124 @@ public sealed partial class WizardView : Page
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"WebView2 render failed: {ex}");
-            // Fall back: leave WebView blank; report-open button still works.
+            // Generation check in catch too — a stale failed render
+            // must not overwrite a newer successful render with the
+            // fallback panel (GPT-5.5 slice-27 review must-fix #2).
+            if (myGen != Interlocked.Read(ref _renderGeneration)) return;
+            // Loader exceptions during Ensure are typically the
+            // runtime-missing case; show the fallback panel rather than
+            // leaving a silent blank pane.
+            ShowWebView2Fallback($"WebView2 initialization failed: {ex.Message}");
+        }
+    }
+
+    private void ShowWebView2Fallback(string? status = null)
+    {
+        ReportWebView.Visibility = Visibility.Collapsed;
+        WebView2FallbackPanel.Visibility = Visibility.Visible;
+        WebView2FallbackStatus.Text = status ?? string.Empty;
+        // If the bundled bootstrapper is absent (dev builds, slim
+        // packaging), the "Install" button can't do anything useful —
+        // disable it and rely on "Get installer" to take the user to
+        // the public download URL.
+        WebView2InstallButton.IsEnabled = App.Current.WebView2Runtime.IsBundledInstallerAvailable;
+    }
+
+    private void HideWebView2Fallback()
+    {
+        WebView2FallbackPanel.Visibility = Visibility.Collapsed;
+        ReportWebView.Visibility = Visibility.Visible;
+    }
+
+    private async void WebView2InstallButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            WebView2InstallButton.IsEnabled = false;
+            WebView2RetryButton.IsEnabled = false;
+            WebView2FallbackStatus.Text = "Installing WebView2 Runtime…";
+            var progress = new Progress<string>(msg =>
+            {
+                DispatcherQueue.TryEnqueue(() => WebView2FallbackStatus.Text = msg);
+            });
+            bool installed = await App.Current.WebView2Runtime
+                .TryRunBundledBootstrapperAsync(progress)
+                .ConfigureAwait(true);
+            if (installed)
+            {
+                WebView2FallbackStatus.Text = "WebView2 installed — re-rendering report…";
+                // Re-render the current HTML through the shared path
+                // rather than synthesizing a property-change event
+                // (GPT-5.5 slice-27 review must-fix #3).
+                await RenderCurrentReportHtmlAsync().ConfigureAwait(true);
+            }
+            else
+            {
+                WebView2FallbackStatus.Text =
+                    "Install did not complete. You can retry, get the installer, or open the report file directly.";
+                WebView2InstallButton.IsEnabled = App.Current.WebView2Runtime.IsBundledInstallerAvailable;
+                WebView2RetryButton.IsEnabled = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            WebView2FallbackStatus.Text = $"Install failed: {ex.Message}";
+            WebView2InstallButton.IsEnabled = App.Current.WebView2Runtime.IsBundledInstallerAvailable;
+            WebView2RetryButton.IsEnabled = true;
+        }
+    }
+
+    private async void WebView2RetryButton_Click(object sender, RoutedEventArgs e)
+    {
+        // After a manual install via the public fwlink the user comes
+        // back to the app — re-probe the runtime and re-render. This
+        // is the only honest way to recover when the bundled installer
+        // is absent (GPT-5.5 slice-27 review must-fix #1).
+        WebView2RetryButton.IsEnabled = false;
+        WebView2FallbackStatus.Text = "Checking for WebView2 Runtime…";
+        try
+        {
+            await RenderCurrentReportHtmlAsync().ConfigureAwait(true);
+        }
+        finally
+        {
+            // RenderCurrentReportHtmlAsync flips visibility itself; if
+            // the panel is still shown, the runtime is still missing and
+            // we re-enable the retry button for the next attempt.
+            if (WebView2FallbackPanel.Visibility == Visibility.Visible)
+            {
+                WebView2RetryButton.IsEnabled = true;
+                if (string.IsNullOrEmpty(WebView2FallbackStatus.Text) ||
+                    WebView2FallbackStatus.Text == "Checking for WebView2 Runtime…")
+                {
+                    WebView2FallbackStatus.Text =
+                        "WebView2 Runtime is still not detected. If you've installed it, try again or restart the app.";
+                }
+            }
+        }
+    }
+
+    private async void WebView2OpenManualButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await App.Current.WebView2Runtime.OpenManualInstallerAsync().ConfigureAwait(true);
+            WebView2FallbackStatus.Text =
+                "Installer opened in your browser. After installing WebView2, return here and click \"Install WebView2 (recommended)\" or scroll the report panel back into view to retry.";
+        }
+        catch (Exception ex)
+        {
+            WebView2FallbackStatus.Text = $"Couldn't open the installer URL: {ex.Message}";
+        }
+    }
+
+    private void WebView2OpenReportFromFallbackButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Delegate to the existing ScoreViewModel command so the file
+        // open uses the same shell-execute path as the main toolbar.
+        if (ViewModel.Score.OpenReportCommand.CanExecute(null))
+        {
+            ViewModel.Score.OpenReportCommand.Execute(null);
         }
     }
 

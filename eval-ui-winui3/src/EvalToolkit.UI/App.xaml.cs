@@ -22,6 +22,7 @@ public partial class App : Application
     public IFileDialogService FileDialog { get; private set; } = null!;
     public IEvalGenJobService JobService { get; private set; } = null!;
     public IEvalScoreJobService ScoreService { get; private set; } = null!;
+    public IWebView2RuntimeService WebView2Runtime { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -61,6 +62,12 @@ public partial class App : Application
         // CLI/A2A WorkIQ clients; the wizard's RunScore command builds
         // the request from ScoreViewModel form state.
         ScoreService = new EvalScoreJobService();
+
+        // Slice 27: WebView2 runtime detection + bundled Evergreen
+        // Bootstrapper. Singleton so the in-process "available" cache
+        // is shared; the detection is cheap (static API), but keeping
+        // one instance lets us swap in a fake for diagnostics.
+        WebView2Runtime = new WebView2RuntimeService();
 
         // Slice 24: shell + jobs sidebar. MainShellViewModel owns the
         // long-lived sidebar VM (so its job list survives navigation),
