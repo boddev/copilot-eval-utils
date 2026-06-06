@@ -135,7 +135,17 @@ public partial class WizardViewModel : ObservableObject, IDisposable
     private async Task GoToEditorAsync()
     {
         if (string.IsNullOrWhiteSpace(Progress.OutputCsvPath)) return;
-        await Editor.LoadAsync(Progress.OutputCsvPath).ConfigureAwait(true);
+        // GPT-5.5 finding #3: If the user already opened the editor for
+        // this CSV, edited rows (now dirty), and clicked Back to Step 3,
+        // re-entering must NOT reload from disk — that would silently
+        // discard the dirty edits. Only load when the editor is empty
+        // or pointing at a different file.
+        bool alreadyLoaded = Editor.IsLoaded
+            && string.Equals(Editor.CsvPath, Progress.OutputCsvPath, StringComparison.OrdinalIgnoreCase);
+        if (!alreadyLoaded)
+        {
+            await Editor.LoadAsync(Progress.OutputCsvPath).ConfigureAwait(true);
+        }
         CurrentStep = WizardStep.Step4Editor;
     }
     private bool CanGoToEditor() =>

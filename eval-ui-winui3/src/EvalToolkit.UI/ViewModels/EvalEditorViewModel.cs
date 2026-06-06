@@ -76,6 +76,9 @@ public sealed partial class EvalEditorViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasDirtyRows));
         SaveCommand.NotifyCanExecuteChanged();
         RevertAllCommand.NotifyCanExecuteChanged();
+        // CanReload is gated on !HasDirtyRows; recompute when DirtyCount
+        // flips through zero.
+        ReloadCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>
@@ -198,13 +201,18 @@ public sealed partial class EvalEditorViewModel : ObservableObject, IDisposable
 
             // Snapshot rows on the UI thread (ObservableCollection is
             // not thread-safe; user could still type in a textbox while
-            // we serialize the snapshot).
-            List<EvalRowRecord> snapshot = await EnqueueWithResultAsync(() =>
-            {
-                var list = new List<EvalRowRecord>(Rows.Count);
-                foreach (var r in Rows) list.Add(r.ToRecord());
-                return list;
-            }).ConfigureAwait(false);
+            // we serialize the snapshot). Capture (row, record) pairs
+            // so we can later accept-only-if-still-matches per row,
+            // avoiding GPT-5.5 finding #1: a user edit between snapshot
+            // and AcceptChanges would otherwise be silently marked saved.
+            List<(EvalRowViewModel Row, EvalRowRecord Record)> pairs =
+                await EnqueueWithResultAsync(() =>
+                {
+                    var list = new List<(EvalRowViewModel, EvalRowRecord)>(Rows.Count);
+                    foreach (var r in Rows) list.Add((r, r.ToRecord()));
+                    return list;
+                }).ConfigureAwait(false);
+            var snapshot = pairs.ConvertAll(p => p.Record);
 
             try
             {
@@ -237,11 +245,18 @@ public sealed partial class EvalEditorViewModel : ObservableObject, IDisposable
             await EnqueueAsync(() =>
             {
                 if (myVersion != Volatile.Read(ref _operationVersion)) return;
-                foreach (var r in Rows)
+                int stillDirty = 0;
+                foreach (var (row, rec) in pairs)
                 {
-                    r.AcceptChanges();
+                    // AcceptChangesIfMatches returns false when the user
+                    // typed something between snapshot and now; that row
+                    // stays dirty so the unsaved edit isn't masked.
+                    if (!row.AcceptChangesIfMatches(rec))
+                    {
+                        stillDirty++;
+                    }
                 }
-                DirtyCount = 0;
+                DirtyCount = stillDirty;
                 IsSaving = false;
             }).ConfigureAwait(false);
         }
@@ -268,7 +283,16 @@ public sealed partial class EvalEditorViewModel : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(CsvPath)) return;
         await LoadAsync(CsvPath).ConfigureAwait(false);
     }
-    private bool CanReload() => !string.IsNullOrWhiteSpace(CsvPath) && !IsSaving && !IsLoading;
+    private bool CanReload() =>
+        !string.IsNullOrWhiteSpace(CsvPath)
+        && !IsSaving
+        && !IsLoading
+        // GPT-5.5 finding #2: Reload silently discards dirty edits.
+        // Disable Reload while dirty so the only paths off of dirty
+        // state are Save or Revert all (both explicit). A future
+        // ContentDialog "discard changes?" prompt can re-enable Reload
+        // when dirty.
+        && !HasDirtyRows;
 
     private void OnRowDirtyChanged(object? sender, EventArgs e)
     {

@@ -59,7 +59,10 @@ public sealed partial class EvalRowViewModel : ObservableObject
         ActualAnswer = _origActual;
     }
 
-    /// <summary>Snapshot current values as the new "clean" state. Called by editor after Save succeeds.</summary>
+    /// <summary>
+    /// Snapshot current values as the new "clean" state. Called by editor
+    /// after Save succeeds. Returns true if the row was actually accepted.
+    /// </summary>
     public void AcceptChanges()
     {
         _origPrompt = Prompt;
@@ -67,6 +70,27 @@ public sealed partial class EvalRowViewModel : ObservableObject
         _origSource = SourceLocation;
         _origActual = ActualAnswer;
         UpdateDirty();
+    }
+
+    /// <summary>
+    /// Conditionally accept changes only if the row's current values
+    /// still match <paramref name="written"/> (the snapshot that was
+    /// just written to disk). Returns true when the row was accepted.
+    /// If the user edited the row between the save snapshot and now,
+    /// the row stays dirty so the unsaved edits aren't silently lost.
+    /// </summary>
+    public bool AcceptChangesIfMatches(EvalRowRecord written)
+    {
+        ArgumentNullException.ThrowIfNull(written);
+        if (!string.Equals(Prompt, written.Prompt, StringComparison.Ordinal) ||
+            !string.Equals(ExpectedAnswer, written.ExpectedAnswer, StringComparison.Ordinal) ||
+            !string.Equals(SourceLocation, written.SourceLocation, StringComparison.Ordinal) ||
+            !string.Equals(ActualAnswer, written.ActualAnswer, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        AcceptChanges();
+        return true;
     }
 
     public EvalRowRecord ToRecord() =>
