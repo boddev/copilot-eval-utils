@@ -166,5 +166,15 @@
     <PackageVersion Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948" />
     <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 
+    <!--
+      Slice 26 winui-step5 — Markdig renders the EvalScore markdown
+      report to HTML for the Step 5 WebView2 results viewer. Raw HTML
+      is disabled in the pipeline so user/judge content can't inject
+      script; a strict CSP wrapper (`default-src 'self'`) is applied
+      around the rendered body before NavigateToString is called.
+      Pinned 0.42.0 — current stable.
+    -->
+    <PackageVersion Include="Markdig" Version="0.42.0" />
+
   </ItemGroup>
 </Project>

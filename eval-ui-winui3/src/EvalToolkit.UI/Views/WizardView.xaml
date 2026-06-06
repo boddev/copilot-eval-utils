@@ -347,6 +347,8 @@
                                         Command="{Binding RevertAllCommand}"/>
                                 <Button Content="Reload"
                                         Command="{Binding ReloadCommand}"/>
+                                <Button Content="Score…"
+                                        Command="{x:Bind ViewModel.GoToScoreCommand}"/>
                             </StackPanel>
                         </Grid>
 
@@ -416,6 +418,158 @@
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
+                    </Grid>
+                </Border>
+
+                <!-- ============ STEP 5: Score ============ -->
+                <Border x:Name="Step5Panel"
+                        Style="{StaticResource PanelStyle}"
+                        DataContext="{x:Bind ViewModel.Score, Mode=OneTime}"
+                        Visibility="{x:Bind ViewModel.IsStep5Visible, Mode=OneWay}">
+                    <Grid RowSpacing="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Style="{StaticResource StepHeadingStyle}"
+                                   Text="Score the evaluation set"/>
+                        <TextBlock Grid.Row="1" Style="{StaticResource StepDescriptionStyle}"
+                                   Text="Send each prompt to WorkIQ, then have a judge compare answers. Edited rows from Step 4 are merged into the sidecar automatically before scoring runs."/>
+
+                        <InfoBar Grid.Row="2"
+                                 IsOpen="{x:Bind ViewModel.Score.HasError, Mode=OneWay}"
+                                 Severity="Error"
+                                 Title="Scoring error"
+                                 Message="{x:Bind ViewModel.Score.ErrorMessage, Mode=OneWay}"/>
+
+                        <Grid Grid.Row="3" ColumnSpacing="24" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBox Grid.Row="0" Grid.Column="0"
+                                     Header="Connector ID (optional)"
+                                     PlaceholderText="e.g. MyConnector-1234"
+                                     Text="{x:Bind ViewModel.Score.ConnectorId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="0" Grid.Column="1"
+                                     Header="M365 tenant ID (optional)"
+                                     PlaceholderText="GUID"
+                                     Text="{x:Bind ViewModel.Score.TenantId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                            <controls:NumberBox Grid.Row="1" Grid.Column="0"
+                                       Header="Pass threshold (0–100)"
+                                       Minimum="0"
+                                       Maximum="100"
+                                       SpinButtonPlacementMode="Compact"
+                                       SmallChange="5"
+                                       LargeChange="10"
+                                       Value="{x:Bind ViewModel.Score.Threshold, Mode=TwoWay}"/>
+                            <ComboBox Grid.Row="1" Grid.Column="1"
+                                      Header="Judge provider"
+                                      SelectedValue="{x:Bind ViewModel.Score.JudgeProviderWire, Mode=TwoWay}"
+                                      SelectedValuePath="Tag"
+                                      HorizontalAlignment="Stretch">
+                                <ComboBoxItem Content="WorkIQ (default)" Tag="workiq"/>
+                                <ComboBoxItem Content="Azure OpenAI" Tag="azure-openai"/>
+                                <ComboBoxItem Content="GitHub Copilot CLI" Tag="github-copilot"/>
+                            </ComboBox>
+
+                            <TextBox Grid.Row="2" Grid.Column="0"
+                                     Header="M365 agent ID (optional, enables A2A)"
+                                     PlaceholderText="agent-id"
+                                     Text="{x:Bind ViewModel.Score.M365AgentId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="2" Grid.Column="1"
+                                     Header="Judge agent ID (optional)"
+                                     PlaceholderText="judge-agent-id"
+                                     Text="{x:Bind ViewModel.Score.JudgeAgentId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                            <TextBox Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                                     Header="System prompt (optional)"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MinHeight="80"
+                                     Text="{x:Bind ViewModel.Score.SystemPrompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                        </Grid>
+
+                        <Grid Grid.Row="4" ColumnSpacing="12" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="2*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                        Orientation="Horizontal" Spacing="8">
+                                <Button Content="Run scoring"
+                                        Style="{ThemeResource AccentButtonStyle}"
+                                        Command="{x:Bind ViewModel.RunScoreCommand}"/>
+                                <Button Content="Cancel"
+                                        Command="{x:Bind ViewModel.CancelScoreCommand}"
+                                        Visibility="{x:Bind ViewModel.Score.IsRunning, Mode=OneWay}"/>
+                                <TextBlock VerticalAlignment="Center"
+                                           Text="{x:Bind ViewModel.Score.StatusMessage, Mode=OneWay}"/>
+                            </StackPanel>
+
+                            <ProgressBar Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                                         Minimum="0" Maximum="100"
+                                         IsIndeterminate="{x:Bind ViewModel.Score.IsIndeterminate, Mode=OneWay}"
+                                         Value="{x:Bind ViewModel.Score.PercentValue, Mode=OneWay}"
+                                         Visibility="{x:Bind ViewModel.Score.IsRunning, Mode=OneWay}"/>
+
+                            <ScrollViewer Grid.Row="2" Grid.Column="0"
+                                          MaxHeight="360"
+                                          VerticalScrollBarVisibility="Auto"
+                                          BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                          BorderThickness="1"
+                                          Padding="8">
+                                <ItemsRepeater ItemsSource="{x:Bind ViewModel.Score.LogLines, Mode=OneWay}">
+                                    <ItemsRepeater.ItemTemplate>
+                                        <DataTemplate x:DataType="x:String">
+                                            <TextBlock FontFamily="Cascadia Mono, Consolas, monospace"
+                                                       FontSize="12"
+                                                       TextWrapping="Wrap"
+                                                       Text="{x:Bind}"/>
+                                        </DataTemplate>
+                                    </ItemsRepeater.ItemTemplate>
+                                </ItemsRepeater>
+                            </ScrollViewer>
+
+                            <Border Grid.Row="2" Grid.Column="1"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    MinHeight="360"
+                                    Padding="0">
+                                <controls:WebView2 x:Name="ReportWebView"
+                                                   NavigationStarting="ReportWebView_NavigationStarting"/>
+                            </Border>
+
+                            <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                                        Orientation="Horizontal" Spacing="8"
+                                        Visibility="{x:Bind ViewModel.Score.IsComplete, Mode=OneWay}">
+                                <Button Content="Open report (.md)"
+                                        Command="{x:Bind ViewModel.Score.OpenReportCommand}"/>
+                                <Button Content="Open scored CSV"
+                                        Command="{x:Bind ViewModel.Score.OpenScoredCsvCommand}"/>
+                                <Button Content="Open output folder"
+                                        Command="{x:Bind ViewModel.Score.OpenOutputFolderCommand}"/>
+                            </StackPanel>
+                        </Grid>
                     </Grid>
                 </Border>
 

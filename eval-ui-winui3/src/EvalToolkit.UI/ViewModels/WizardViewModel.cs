@@ -31,39 +31,47 @@ public enum WizardStep
 public partial class WizardViewModel : ObservableObject, IDisposable
 {
     private readonly IEvalGenJobService _jobService;
+    private readonly IEvalScoreJobService _scoreService;
     private readonly string _workspaceRoot;
     private CancellationTokenSource? _runCts;
+    private CancellationTokenSource? _scoreCts;
     private bool _disposed;
 
     public DatasetPickerViewModel DatasetPicker { get; }
     public DescribeViewModel Describe { get; }
     public ProgressViewModel Progress { get; }
     public EvalEditorViewModel Editor { get; }
+    public ScoreViewModel Score { get; }
 
     public WizardViewModel(
         IFileDialogService dialog,
         IEvalGenJobService jobService,
+        IEvalScoreJobService scoreService,
         string workspaceRoot,
         Microsoft.UI.Dispatching.DispatcherQueue dispatcher)
     {
         ArgumentNullException.ThrowIfNull(dialog);
         ArgumentNullException.ThrowIfNull(jobService);
+        ArgumentNullException.ThrowIfNull(scoreService);
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         ArgumentNullException.ThrowIfNull(dispatcher);
 
         _jobService = jobService;
+        _scoreService = scoreService;
         _workspaceRoot = workspaceRoot;
 
         DatasetPicker = new DatasetPickerViewModel(dialog);
         Describe = new DescribeViewModel();
         Progress = new ProgressViewModel();
         Editor = new EvalEditorViewModel(dispatcher);
+        Score = new ScoreViewModel(dispatcher);
         CurrentStep = WizardStep.Step1Dataset;
 
         DatasetPicker.PropertyChanged += OnChildPropertyChanged;
         Describe.PropertyChanged += OnChildPropertyChanged;
         Progress.PropertyChanged += OnProgressPropertyChanged;
         Editor.PropertyChanged += OnEditorPropertyChanged;
+        Score.PropertyChanged += OnScorePropertyChanged;
     }
 
     [ObservableProperty]
@@ -73,6 +81,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
     public bool IsStep2Visible => CurrentStep == WizardStep.Step2Describe;
     public bool IsStep3Visible => CurrentStep == WizardStep.Step3Progress;
     public bool IsStep4Visible => CurrentStep == WizardStep.Step4Editor;
+    public bool IsStep5Visible => CurrentStep == WizardStep.Step5Score;
 
     public int CurrentStepNumber => (int)CurrentStep + 1;
     public string StepHeader => $"Step {CurrentStepNumber} of 5";
@@ -94,6 +103,9 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         // The view confirms unsaved-changes via ContentDialog before
         // actually invoking GoBack.
         WizardStep.Step4Editor => !Editor.IsSaving && !Editor.IsLoading,
+        // From step 5 (score) — allow back to the editor once scoring
+        // is finished or hasn't started (not while running).
+        WizardStep.Step5Score => !Score.IsRunning,
         _ => false,
     };
 
@@ -128,6 +140,9 @@ public partial class WizardViewModel : ObservableObject, IDisposable
             case WizardStep.Step4Editor:
                 CurrentStep = WizardStep.Step3Progress;
                 break;
+            case WizardStep.Step5Score:
+                CurrentStep = WizardStep.Step4Editor;
+                break;
         }
     }
 
@@ -153,6 +168,119 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         && !string.IsNullOrWhiteSpace(Progress.OutputCsvPath)
         && !Editor.IsLoading
         && !Editor.IsSaving;
+
+    /// <summary>
+    /// Advance from Step 4 (editor) into Step 5 (score). Blocks if
+    /// dirty edits are pending (GPT-5.5 plan-review #1 / blocker #3 —
+    /// silently scoring stale sidecar would lose user edits). The
+    /// service's CSV-merge step then overlays the saved CSV onto the
+    /// sidecar rows so user edits are reflected in scoring.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanGoToScore))]
+    private void GoToScore()
+    {
+        if (string.IsNullOrWhiteSpace(Progress.OutputSidecarPath))
+        {
+            return;
+        }
+        if (Editor.HasDirtyRows)
+        {
+            Editor.ErrorMessage = "Save your edits in the row editor before scoring.";
+            return;
+        }
+        Score.EvalSetPath = Progress.OutputSidecarPath;
+        Score.OutputDirectory = Progress.OutputDirectory;
+        // Carry tenant id from Step 2 if user already supplied one.
+        if (string.IsNullOrWhiteSpace(Score.TenantId) && !string.IsNullOrWhiteSpace(Describe.M365TenantId))
+        {
+            Score.TenantId = Describe.M365TenantId;
+        }
+        CurrentStep = WizardStep.Step5Score;
+    }
+    private bool CanGoToScore() =>
+        Progress.IsComplete
+        && !string.IsNullOrWhiteSpace(Progress.OutputSidecarPath)
+        && !Score.IsRunning
+        && !Editor.IsSaving
+        && !Editor.IsLoading;
+
+    [RelayCommand(CanExecute = nameof(CanRunScore))]
+    private async Task RunScoreAsync()
+    {
+        EvalScoreRequest request;
+        try
+        {
+            request = Score.BuildRequest();
+        }
+        catch (Exception ex)
+        {
+            Score.ApplyFailure(Score.RunVersion, ex.Message);
+            return;
+        }
+
+        long version = Score.BumpRunVersion();
+        Score.ResetRunState();
+        Score.IsRunning = true;
+
+        _scoreCts?.Dispose();
+        _scoreCts = new CancellationTokenSource();
+        var ct = _scoreCts.Token;
+
+        // ScoreViewModel.ApplyProgress filters by version and marshals
+        // to the dispatcher itself, so we don't need a UI-thread
+        // Progress<T> capture here.
+        var progress = new Progress<JobProgress>(p => Score.ApplyProgress(version, p));
+
+        try
+        {
+            var result = await Task.Run(
+                () => _scoreService.RunAsync(request, progress, ct),
+                ct).ConfigureAwait(true);
+            // Stale-op guard: if a newer run kicked off mid-flight,
+            // ApplySuccess will no-op and the new run owns the state.
+            string html;
+            try
+            {
+                string md = await File.ReadAllTextAsync(result.ReportPath, ct).ConfigureAwait(true);
+                html = MarkdownReportRenderer.RenderToHtml(md);
+            }
+            catch (OperationCanceledException)
+            {
+                // GPT-5.5 slice-26 IMPORTANT #2: cancellation must
+                // propagate to the outer handler so the run shows as
+                // cancelled, not as a stale-success with an error pane.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                html = MarkdownReportRenderer.RenderError(
+                    $"Failed to read report at {result.ReportPath}: {ex.Message}");
+            }
+            Score.ApplySuccess(version, result, html);
+        }
+        catch (OperationCanceledException)
+        {
+            Score.ApplyCancelled(version);
+        }
+        catch (Exception ex)
+        {
+            Score.ApplyFailure(version, ex.Message);
+        }
+        finally
+        {
+            RaiseNavigationCanExecuteChanged();
+        }
+    }
+    private bool CanRunScore() =>
+        !Score.IsRunning
+        && !string.IsNullOrWhiteSpace(Score.EvalSetPath);
+
+    [RelayCommand(CanExecute = nameof(CanCancelScore))]
+    private void CancelScore()
+    {
+        _scoreCts?.Cancel();
+    }
+    private bool CanCancelScore() => Score.IsRunning;
 
     [RelayCommand(CanExecute = nameof(CanGenerate))]
     private async Task GenerateAsync()
@@ -266,7 +394,16 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         {
             _runCts?.Cancel();
         }
+        if (Score.IsRunning)
+        {
+            _scoreCts?.Cancel();
+        }
         Editor.Reset();
+        Score.BumpRunVersion();
+        Score.ResetRunState();
+        Score.EvalSetPath = null;
+        Score.OutputDirectory = null;
+        Score.IsRunning = false;
         CurrentStep = WizardStep.Step1Dataset;
     }
 
@@ -276,6 +413,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsStep2Visible));
         OnPropertyChanged(nameof(IsStep3Visible));
         OnPropertyChanged(nameof(IsStep4Visible));
+        OnPropertyChanged(nameof(IsStep5Visible));
         OnPropertyChanged(nameof(CurrentStepNumber));
         OnPropertyChanged(nameof(StepHeader));
         RaiseNavigationCanExecuteChanged();
@@ -309,7 +447,18 @@ public partial class WizardViewModel : ObservableObject, IDisposable
     private void OnEditorPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(EvalEditorViewModel.IsSaving)
-            || e.PropertyName == nameof(EvalEditorViewModel.IsLoading))
+            || e.PropertyName == nameof(EvalEditorViewModel.IsLoading)
+            || e.PropertyName == nameof(EvalEditorViewModel.HasDirtyRows))
+        {
+            RaiseNavigationCanExecuteChanged();
+        }
+    }
+
+    private void OnScorePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ScoreViewModel.IsRunning)
+            || e.PropertyName == nameof(ScoreViewModel.IsComplete)
+            || e.PropertyName == nameof(ScoreViewModel.EvalSetPath))
         {
             RaiseNavigationCanExecuteChanged();
         }
@@ -325,6 +474,9 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         GenerateCommand.NotifyCanExecuteChanged();
         CancelCommand.NotifyCanExecuteChanged();
         GoToEditorCommand.NotifyCanExecuteChanged();
+        GoToScoreCommand.NotifyCanExecuteChanged();
+        RunScoreCommand.NotifyCanExecuteChanged();
+        CancelScoreCommand.NotifyCanExecuteChanged();
     }
 
     public void Dispose()
@@ -334,6 +486,9 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         _runCts?.Cancel();
         _runCts?.Dispose();
         _runCts = null;
+        _scoreCts?.Cancel();
+        _scoreCts?.Dispose();
+        _scoreCts = null;
         GC.SuppressFinalize(this);
     }
 }

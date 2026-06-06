@@ -21,6 +21,7 @@ public partial class App : Application
     public ThemeService Theme { get; private set; } = null!;
     public IFileDialogService FileDialog { get; private set; } = null!;
     public IEvalGenJobService JobService { get; private set; } = null!;
+    public IEvalScoreJobService ScoreService { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -56,6 +57,10 @@ public partial class App : Application
         WorkspaceRoot = EvalGenJobService.DefaultWorkspaceRoot();
         var jobService = new EvalGenJobService();
         JobService = jobService;
+        // Slice 26: companion service for Step 5 (score panel). Default
+        // CLI/A2A WorkIQ clients; the wizard's RunScore command builds
+        // the request from ScoreViewModel form state.
+        ScoreService = new EvalScoreJobService();
 
         // Slice 24: shell + jobs sidebar. MainShellViewModel owns the
         // long-lived sidebar VM (so its job list survives navigation),

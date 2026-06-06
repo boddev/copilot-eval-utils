@@ -1,4 +1,3 @@
-using System.CommandLine;
 using EvalToolkit.EvalScore.EvalDocument;
 using EvalToolkit.EvalScore.EvalSet;
 using EvalToolkit.EvalScore.Evaluator;
@@ -6,7 +5,9 @@ using EvalToolkit.EvalScore.Models;
 using EvalToolkit.EvalScore.Preflight;
 using EvalToolkit.EvalScore.Reporting;
 using EvalToolkit.EvalScore.Scoring;
+using EvalToolkit.EvalScore.Writers;
 using EvalToolkit.WorkIQ;
+using System.CommandLine;
 
 namespace EvalToolkit.Cli.Commands;
 
@@ -296,6 +297,26 @@ internal static class ScoreCommand
         string report = MarkdownReporter.GenerateReport(evalResult, summary);
         string outPath = await MarkdownReporter.WriteReportAsync(report, args.OutputDir, args.EvalSet!, ct).ConfigureAwait(false);
         Console.Error.WriteLine($"📝 Report: {outPath}");
+        try
+        {
+            string csvPath = await ResultsCsvWriter
+                .WriteAsync(roRows, args.OutputDir, args.EvalSet!, ct)
+                .ConfigureAwait(false);
+            Console.Error.WriteLine($"📊 Scored CSV: {csvPath}");
+        }
+        catch (OperationCanceledException)
+        {
+            // Don't swallow cancellation as a benign "skipped" — let the
+            // CLI's outer handler observe the cancel and exit accordingly
+            // (GPT-5.5 slice-26 code-review IMPORTANT #2).
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Mirror the UI service: report is the primary artifact;
+            // don't fail the run if the CSV write fails.
+            Console.Error.WriteLine($"  ⚠️  Scored CSV write skipped: {ex.Message}");
+        }
         Console.Error.WriteLine(
             $"Done. {summary.TotalQuestions} scored — pass={summary.PassCount} fail={summary.FailCount} " +
             $"avg={summary.AverageScore} min={summary.MinScore} max={summary.MaxScore}");
