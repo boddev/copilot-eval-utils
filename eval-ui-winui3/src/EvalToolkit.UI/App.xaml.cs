@@ -32,6 +32,7 @@ public partial class App : Application
     public ITrayIconService Tray { get; private set; } = null!;
     public IJumpListService JumpList { get; private set; } = null!;
     public IFileActivationRouter Router { get; private set; } = null!;
+    public INotificationActionRouter NotificationRouter { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -114,7 +115,12 @@ public partial class App : Application
         // so the tray menu can actually shut the app down (the
         // ShellWindow Closing handler reroutes window X clicks to
         // hide-to-tray).
-        Tray = new TrayIconService(JobService, ScoreService, WorkspaceRoot, UiDispatcher);
+        // Slice 31: build NotificationRouter BEFORE Tray so the Tray
+        // can share it with the App-level cold-start activation
+        // handler — both paths must dedupe through one instance to
+        // prevent double-open of the job folder.
+        NotificationRouter = new NotificationActionRouter(WorkspaceRoot);
+        Tray = new TrayIconService(JobService, ScoreService, WorkspaceRoot, UiDispatcher, NotificationRouter);
         Tray.ExitRequested += OnTrayExitRequested;
         Tray.Initialize(ShellWindow);
 
@@ -153,6 +159,31 @@ public partial class App : Application
         foreach (var pending in ActivationQueue.Drain())
         {
             HandleActivation(pending);
+        }
+
+        // Slice 31 (winui-native-plus-toasts) BLOCKER #1 from GPT-5.5
+        // plan review: read the cold-start AppActivationArguments here
+        // (AFTER Tray.Initialize's TryRegisterNotifications subscribed
+        // + Register'd), per WAS guidance that Register must precede
+        // GetActivatedEventArgs for notification activations. This is
+        // the cold-start path for kinds OTHER than Launch — AppNotification
+        // (toast clicked while app was closed), File (Explorer FTA
+        // double-click while app was closed), and Protocol. The Launch
+        // kind is delivered by the OnLaunched args.Arguments path
+        // below, so we skip it here to avoid double-routing.
+        try
+        {
+            var coldStart = Microsoft.Windows.AppLifecycle.AppInstance
+                .GetCurrent()
+                .GetActivatedEventArgs();
+            if (coldStart is not null && coldStart.Kind != Microsoft.Windows.AppLifecycle.ExtendedActivationKind.Launch)
+            {
+                HandleActivation(coldStart);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"App.OnLaunched: cold-start activation read failed: {ex}");
         }
 
         // Slice 29: also route this launch's own arguments, so launching
@@ -237,11 +268,26 @@ public partial class App : Application
         // Slice 29: route jump-list verbs (--job-id, --new-evaluation).
         // Slice 30: route file activations via the --open-file synthetic
         // verb so the queue / replay path is shared.
+        // Slice 31: route toast-notification activations via the shared
+        // NotificationActionRouter so warm-start NotificationInvoked
+        // and cold-start AppNotificationActivatedEventArgs both flow
+        // through the same dedupe + path-validation pipeline.
         // For Launch activations the verb arrives as a single Arguments
         // string on Microsoft.Windows.AppLifecycle.Activation.ILaunchActivatedEventArgs.
         // For File activations the path list arrives on IFileActivatedEventArgs.
         try
         {
+            if (args.Data is Microsoft.Windows.AppNotifications.AppNotificationActivatedEventArgs notif)
+            {
+                if (NotificationRouter is null)
+                {
+                    Debug.WriteLine("App.HandleActivation(notif): NotificationRouter not initialized");
+                    return;
+                }
+                NotificationRouter.Route(notif.Arguments, source: "cold-AppActivation");
+                return;
+            }
+
             if (args.Data is Windows.ApplicationModel.Activation.IFileActivatedEventArgs fileArgs)
             {
                 var files = fileArgs.Files;

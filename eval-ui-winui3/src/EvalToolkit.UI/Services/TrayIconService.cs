@@ -80,6 +80,7 @@ public sealed class TrayIconService : ITrayIconService
     private readonly IEvalScoreJobService _scoreJobs;
     private readonly string _workspaceRoot;
     private readonly DispatcherQueue _uiDispatcher;
+    private readonly INotificationActionRouter _notificationRouter;
     private readonly object _gate = new();
 
     private TaskbarIcon? _tray;
@@ -111,7 +112,8 @@ public sealed class TrayIconService : ITrayIconService
         IEvalGenJobService genJobs,
         IEvalScoreJobService scoreJobs,
         string workspaceRoot,
-        DispatcherQueue uiDispatcher)
+        DispatcherQueue uiDispatcher,
+        INotificationActionRouter notificationRouter)
     {
         _genJobs = genJobs ?? throw new ArgumentNullException(nameof(genJobs));
         _scoreJobs = scoreJobs ?? throw new ArgumentNullException(nameof(scoreJobs));
@@ -119,6 +121,7 @@ public sealed class TrayIconService : ITrayIconService
             ? workspaceRoot
             : throw new ArgumentException("Workspace root required.", nameof(workspaceRoot));
         _uiDispatcher = uiDispatcher ?? throw new ArgumentNullException(nameof(uiDispatcher));
+        _notificationRouter = notificationRouter ?? throw new ArgumentNullException(nameof(notificationRouter));
     }
 
     public bool IsWindowHidden
@@ -435,7 +438,7 @@ public sealed class TrayIconService : ITrayIconService
             _ => ("Job state", $"Status {e.Status}: {Path.GetFileName(e.JobDirectory)}"),
         };
 
-        TryShowToast(title, body, e.JobDirectory);
+        TryShowToast(title, body, e.JobDirectory, isFailure: e.Status == JobStatus.Failed);
     }
 
     private bool IsShellWindowForeground()
@@ -456,22 +459,44 @@ public sealed class TrayIconService : ITrayIconService
 
     private void TryRegisterNotifications()
     {
+        // Slice 31 (winui-native-plus-toasts) BLOCKER #1 from GPT-5.5
+        // plan review: subscribe to NotificationInvoked BEFORE Register
+        // so the WAS pipeline can never deliver a queued cold-start
+        // activation between Register and the handler subscribe. If
+        // Register subsequently throws (unpackaged dev without the COM
+        // activator), unsubscribe to avoid a dead handler reference.
         try
         {
-            AppNotificationManager.Default.Register();
-            _notificationsRegistered = true;
             AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
             _notificationInvokedSubscribed = true;
         }
         catch (Exception ex)
         {
-            // Unpackaged dev runs lack the COM activator class slice 31
-            // will add; toasts will silently no-op until then.
+            Debug.WriteLine($"TrayIconService: subscribing NotificationInvoked failed: {ex.Message}");
+            _notificationInvokedSubscribed = false;
+            return;
+        }
+
+        try
+        {
+            AppNotificationManager.Default.Register();
+            _notificationsRegistered = true;
+        }
+        catch (Exception ex)
+        {
+            // Unpackaged dev runs without the slice-32 MSIX COM
+            // activator can fail here; toasts will silently no-op
+            // until the packaged build wires up the activator CLSID.
             Debug.WriteLine($"TrayIconService: AppNotificationManager.Register failed (expected for unpackaged dev): {ex.Message}");
+            if (_notificationInvokedSubscribed)
+            {
+                try { AppNotificationManager.Default.NotificationInvoked -= OnNotificationInvoked; } catch { /* swallow */ }
+                _notificationInvokedSubscribed = false;
+            }
         }
     }
 
-    private void TryShowToast(string title, string body, string? jobDirectory)
+    private void TryShowToast(string title, string body, string? jobDirectory, bool isFailure = false)
     {
         if (!_notificationsRegistered) return;
 
@@ -481,11 +506,24 @@ public sealed class TrayIconService : ITrayIconService
                 .AddText(title)
                 .AddText(body);
 
+            // Slice 31: sticky toast for failures so the user can't
+            // miss a build/score error during long-running batches
+            // (GPT-5.5 plan-review NON-BLOCKER #4). Default scenario
+            // (toast auto-dismisses after a few seconds) for success /
+            // cancellation / informational toasts. SetAttribution is
+            // deferred to slice 32 packaging where the branded
+            // AppLogoOverride asset lives.
+            if (isFailure)
+            {
+                builder = builder.SetScenario(AppNotificationScenario.Reminder);
+            }
+
             if (!string.IsNullOrWhiteSpace(jobDirectory))
             {
                 // Encode the action + path on both the toast body
                 // (clicking the toast itself) and the button (explicit
-                // affordance). Handler parses the args back out.
+                // affordance). Handler parses the args back out via the
+                // shared NotificationActionRouter.
                 builder = builder
                     .AddArgument("action", "open-job")
                     .AddArgument("path", jobDirectory)
@@ -504,15 +542,16 @@ public sealed class TrayIconService : ITrayIconService
 
     private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
     {
+        // Slice 31: delegate to the shared NotificationActionRouter so
+        // warm-start (this handler) and cold-start
+        // (App.HandleActivation seeing AppNotificationActivatedEventArgs)
+        // both flow through the same dedupe + path-validation pipeline
+        // (GPT-5.5 plan-review BLOCKER #3). The router rejects paths
+        // outside the workspace root and collapses double-fires within
+        // a 2-second window.
         try
         {
-            if (args.Arguments.TryGetValue("action", out var action)
-                && string.Equals(action, "open-job", StringComparison.Ordinal)
-                && args.Arguments.TryGetValue("path", out var path)
-                && !string.IsNullOrWhiteSpace(path))
-            {
-                OpenFolderInExplorer(path);
-            }
+            _notificationRouter.Route(args.Arguments, source: "warm-NotificationInvoked");
         }
         catch (Exception ex)
         {

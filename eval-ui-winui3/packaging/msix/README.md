@@ -136,3 +136,114 @@ This synthesises the same `OpenEvalSetRequest` that an FTA activation
 would produce, so the smoke test for slice 30 doesn't need an
 installed MSIX.
 
+
+---
+
+## Slice 31: Toast notifications COM-activator manifest fragment
+
+Slice 31 (`winui-native-plus-toasts`) hardens the **runtime** activator
+plumbing  subscribe-before-register ordering, cold-start
+`AppActivationArguments` routing, shared `NotificationActionRouter`
+with dedupe + path validation. The MSIX packaging slice (32) consumes
+the manifest fragment below so the OS toast platform can cold-start
+the app when the user clicks a notification while the app is closed.
+
+### Why a COM activator is required
+
+`Microsoft.Windows.AppNotifications.AppNotificationManager.Default.Register()`
+in an **unpackaged** dev run lazily registers a COM activator class
+under the current PID, which dies with the process. For a **packaged**
+app, the OS needs a permanent CLSID it can launch on demand  that
+CLSID is declared in the package manifest via the
+`windows.comServer` extension and tagged as the toast activator via
+the `desktop:ToastNotificationActivation` extension.
+
+### Manifest fragment
+
+Insert into `Package.appxmanifest` under
+`<Package><Applications><Application><Extensions>`:
+
+```xml
+<Extensions>
+  <com:Extension Category="windows.comServer">
+    <com:ComServer>
+      <com:ExeServer
+        Executable="EvalToolkit.UI.exe"
+        DisplayName="EvalToolkit Notifications"
+        Arguments="----AppNotificationActivated:">
+        <com:Class
+          Id="REPLACE-WITH-STABLE-GUID"
+          DisplayName="EvalToolkit Toast Activator" />
+      </com:ExeServer>
+    </com:ComServer>
+  </com:Extension>
+
+  <desktop:Extension Category="windows.toastNotificationActivation">
+    <desktop:ToastNotificationActivation
+      ToastActivatorCLSID="REPLACE-WITH-STABLE-GUID" />
+  </desktop:Extension>
+</Extensions>
+```
+
+Key requirements (GPT-5.5 slice 31 plan-review BLOCKER #2):
+
+- `Arguments="----AppNotificationActivated:"` on the `<com:ExeServer>`
+  is **mandatory**  the Windows App SDK inspects the command-line
+  prefix `----AppNotificationActivated:` to know an OS-spawned launch
+  is for a toast activation and not a normal user launch. Without this
+  exact prefix, cold-start toast clicks reach the app but fail to
+  surface as `AppNotificationActivatedEventArgs`.
+- The CLSID **must match** in both extensions. Slice 32 (packaging)
+  will generate a stable GUID via `New-Guid` and substitute it into
+  both `Id="..."` and `ToastActivatorCLSID="..."`. The GUID never
+  changes across versions  bumping it would orphan toasts already
+  pinned in Action Center.
+- `Executable="EvalToolkit.UI.exe"` is relative to the package root,
+  matching the executable name the slice-32 publish step produces.
+
+### Required namespaces
+
+The fragment uses `com:` and `desktop:` namespace prefixes  add them
+to the manifest root element if not already present:
+
+```xml
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="com desktop ...">
+```
+
+### How the slice-31 runtime consumes this
+
+When the OS toast platform launches the app via this COM activator
+class (cold-start toast click), the WAS runtime spins up the process
+and synthesizes an `AppActivationArguments` of kind `AppNotification`
+with the toast's arguments dictionary. Slice 31's flow:
+
+1. `Program.Main` enters single-instance arbitration. The **primary**
+   path no longer calls `GetActivatedEventArgs()` (BLOCKER #1 fix 
+   WAS guidance: `Register()` must precede `GetActivatedEventArgs()`).
+2. `App.OnLaunched` constructs `NotificationActionRouter` then
+   `TrayIconService`, whose `Initialize` subscribes
+   `NotificationInvoked` BEFORE calling `Register()`.
+3. **AFTER** `Register()` completes, `OnLaunched` calls
+   `AppInstance.GetCurrent().GetActivatedEventArgs()` and routes any
+   non-Launch cold-start activation (AppNotification, File, Protocol)
+   through `HandleActivation`.
+4. `HandleActivation` casts `args.Data` to
+   `AppNotificationActivatedEventArgs` and delegates to
+   `NotificationActionRouter.Route(args.Arguments, "cold-AppActivation")`,
+   which dedupes against any warm-start `NotificationInvoked` fire of
+   the same payload.
+
+### Smoke verification today (unpackaged)
+
+Cold-start toast activation is not directly testable without the MSIX,
+but the warm-start path is exercised whenever a job reaches a
+terminal state while the shell window is hidden or backgrounded. The
+`NotificationActionRouter`'s path-validation behavior is also
+exercised by any toast  paths outside the workspace root are
+rejected even in unpackaged dev. See `Smoke.ps1 -OpenFile` (slice 30)
+for related coverage; slice 32 will add a packaged-app toast-click
+manual smoke checklist.

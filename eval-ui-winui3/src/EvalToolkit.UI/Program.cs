@@ -103,22 +103,31 @@ internal static class Program
     /// </summary>
     private static bool DecideSingleInstance()
     {
-        AppActivationArguments activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         AppInstance primary = AppInstance.FindOrRegisterForKey(SingleInstanceKey);
 
         if (primary.IsCurrent)
         {
-            // We are primary; hand future activations to the App. The
-            // App marshals them through ActivationQueue so payloads that
-            // arrive before the shell window is ready are not lost.
+            // Slice 31 (winui-native-plus-toasts) BLOCKER #1 from
+            // GPT-5.5 plan review: do NOT call GetActivatedEventArgs()
+            // here. Per WAS notifications guidance,
+            // AppNotificationManager.Default.Register() must run
+            // BEFORE GetActivatedEventArgs() for cold-start toast
+            // activations to be delivered. The primary path defers
+            // GetActivatedEventArgs to App.OnLaunched (after
+            // TrayIconService.TryRegisterNotifications has run);
+            // non-Launch activations (AppNotification, File, Protocol)
+            // arriving cold are routed there instead. Re-activations
+            // continue to land via primary.Activated → App.OnReactivation.
             primary.Activated += App.OnReactivation;
             return true;
         }
 
-        // Not primary — redirect on a background task and pump the STA
-        // via CoWaitForMultipleObjects while we wait. This matches the
-        // documented WinUI single-instance sample and avoids the STA
-        // pump deadlock that a plain .GetResult() could hit.
+        // Secondary instance: redirect this process's activation to
+        // the primary and exit. The redirect needs the args, so
+        // GetActivatedEventArgs is unavoidable here — and harmless,
+        // because the secondary never calls Register and never
+        // expects notifications.
+        AppActivationArguments activation = AppInstance.GetCurrent().GetActivatedEventArgs();
         RedirectStaSafe(primary, activation);
         return false;
     }
