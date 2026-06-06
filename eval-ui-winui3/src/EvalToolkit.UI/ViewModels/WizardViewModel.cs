@@ -204,6 +204,73 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         && !Editor.IsSaving
         && !Editor.IsLoading;
 
+    /// <summary>
+    /// Slice 30 (FTA): hydrate wizard state from an existing on-disk
+    /// eval set and land in Step 4 (row editor) with the CSV loaded.
+    /// Called by <see cref="Views.WizardView.OnNavigatedTo"/> when
+    /// <see cref="Services.FileActivationRouter"/> navigates with an
+    /// <see cref="Models.OpenEvalSetRequest"/> parameter.
+    ///
+    /// Hydration covers BOTH Progress (so the wizard considers
+    /// generation "complete" — required by <see cref="CanGoToEditor"/>
+    /// AND <see cref="CanGoToScore"/>) AND Score (so the Step 5 form
+    /// is pre-populated when the user advances). Per GPT-5.5
+    /// plan-review BLOCKER #2: just calling Editor.LoadAsync without
+    /// hydrating Progress would land the user in Step 4 but trap them
+    /// there (GoToScore would be disabled).
+    /// </summary>
+    public async Task OpenExistingEvalSetAsync(EvalToolkit.UI.Models.OpenEvalSetRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Reset/clear any in-flight generation state so the wizard
+        // doesn't think it's running a job. The user opened this from
+        // Explorer — there's no live generation tied to it.
+        Progress.IsRunning = false;
+        Progress.IsFailed = false;
+        Progress.Percent = 100;
+        Progress.Phase = "Loaded";
+        Progress.StatusMessage = "Opened from file.";
+        Progress.OutputCsvPath = request.CsvPath;
+        Progress.OutputSidecarPath = request.SidecarPath;
+        Progress.OutputDirectory = request.OutputDirectory;
+        // Set IsComplete LAST so the CanGo* re-evaluation that fires on
+        // its property-changed sees all the path fields populated.
+        Progress.IsComplete = true;
+
+        Score.EvalSetPath = request.SidecarPath;
+        Score.OutputDirectory = request.OutputDirectory;
+
+        bool loadOk = false;
+        try
+        {
+            await Editor.LoadAsync(request.CsvPath).ConfigureAwait(true);
+            loadOk = Editor.IsLoaded;
+        }
+        catch (Exception ex)
+        {
+            // LoadAsync surfaces its own ErrorMessage on the editor,
+            // but trace here too so the activation path is debuggable
+            // when the editor fails to mount.
+            System.Diagnostics.Debug.WriteLine(
+                $"WizardViewModel.OpenExistingEvalSetAsync: LoadAsync failed for '{request.CsvPath}': {ex}");
+        }
+
+        // GPT-5.5 slice-30 code review NON-BLOCKER #4: when the editor
+        // load fails, the wizard's Progress still claims "Loaded" which
+        // weakens the "opened with CSV pre-loaded" promise. Reflect the
+        // failure into Progress.StatusMessage so the user understands
+        // why the editor is empty. Step 5 scoring stays available
+        // because the sidecar IS loaded — only the editor view failed.
+        if (!loadOk)
+        {
+            Progress.StatusMessage =
+                $"Opened sidecar from file, but CSV failed to load: '{request.CsvPath}'.";
+        }
+
+        CurrentStep = WizardStep.Step4Editor;
+    }
+
     [RelayCommand(CanExecute = nameof(CanRunScore))]
     private async Task RunScoreAsync()
     {

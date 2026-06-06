@@ -31,6 +31,7 @@ public partial class App : Application
     public IWebView2RuntimeService WebView2Runtime { get; private set; } = null!;
     public ITrayIconService Tray { get; private set; } = null!;
     public IJumpListService JumpList { get; private set; } = null!;
+    public IFileActivationRouter Router { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -131,6 +132,19 @@ public partial class App : Application
         JumpList.Initialize(JobService, ScoreService);
         _ = JumpList.RefreshAsync();
 
+        // Slice 30: file-type-association routing. Owns the dispatch
+        // logic from "an MSIX FTA fired" or "--open-file <path> was
+        // passed on the command line" to the right wizard step (sidecar
+        // → Step 4 editor) or the right system handler (legacy CSV /
+        // MD → default app). Constructed last so it can hand off to
+        // Navigation safely; the cold-start race (route not yet
+        // registered) is handled by the same _pendingVerbs queue that
+        // slice 29 introduced for --new-evaluation.
+        Router = new FileActivationRouter(
+            Navigation,
+            ShellOpener.OpenFile,
+            warning => Debug.WriteLine($"FileActivationRouter: {warning}"));
+
         // Drain any activations that arrived between Program.Main
         // hooking primary.Activated and OnLaunched finishing shell
         // construction. Slice 21 only needs to bring the window to
@@ -221,10 +235,40 @@ public partial class App : Application
         }
 
         // Slice 29: route jump-list verbs (--job-id, --new-evaluation).
+        // Slice 30: route file activations via the --open-file synthetic
+        // verb so the queue / replay path is shared.
         // For Launch activations the verb arrives as a single Arguments
         // string on Microsoft.Windows.AppLifecycle.Activation.ILaunchActivatedEventArgs.
+        // For File activations the path list arrives on IFileActivatedEventArgs.
         try
         {
+            if (args.Data is Windows.ApplicationModel.Activation.IFileActivatedEventArgs fileArgs)
+            {
+                var files = fileArgs.Files;
+                if (files is not null && files.Count > 0)
+                {
+                    // GPT-5.5 slice-30 plan-review answer #5: first file
+                    // only, log a warning when more were activated.
+                    // Multi-doc wizard UX is out-of-scope for slice 30.
+                    if (files.Count > 1)
+                    {
+                        Debug.WriteLine(
+                            $"App.HandleActivation: file activation with {files.Count} files; routing only the first.");
+                    }
+                    var first = files[0];
+                    string? path = (first as Windows.Storage.IStorageItem)?.Path;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        // Synthesize an --open-file verb so the queue/
+                        // replay path is shared with cold-start verbs.
+                        // Quote the path to survive CommandLineToArgvW
+                        // re-parsing when spaces are present.
+                        HandleVerb($"--open-file \"{path}\"");
+                    }
+                }
+                return;
+            }
+
             if (args.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch
                 && !string.IsNullOrWhiteSpace(launch.Arguments))
             {
@@ -280,6 +324,13 @@ public partial class App : Application
                         // drains it once OnLoaded registers "Wizard".
                         _pendingVerbs.Enqueue(commandLine);
                     }
+                    else if (!navigated)
+                    {
+                        // Replayed via DrainPendingVerbs and STILL failed
+                        // — drop to avoid an infinite loop, but log so
+                        // the drop is debuggable (slice-30 review NON-BLOCKER #7).
+                        Debug.WriteLine("App.HandleVerb(new-evaluation): navigation failed on replay; dropping verb.");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -310,6 +361,39 @@ public partial class App : Application
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"App.HandleVerb(job-id): {ex}");
+                }
+                break;
+
+            case "--open-file" when tokens.Length >= 2:
+                // Slice 30: dispatch file-type-association activations.
+                // Same cold-start race as --new-evaluation: if the
+                // Wizard route isn't registered yet, queue for replay
+                // via DrainPendingVerbs (called by MainShell.OnLoaded).
+                if (Router is null)
+                {
+                    Debug.WriteLine("App.HandleVerb(open-file): Router not initialized");
+                    break;
+                }
+                try
+                {
+                    bool dispatched = Router.Route(tokens[1], out bool needsQueue);
+                    if (!dispatched && needsQueue && allowQueueing)
+                    {
+                        _pendingVerbs.Enqueue(commandLine);
+                    }
+                    else if (!dispatched && needsQueue)
+                    {
+                        // Replayed via DrainPendingVerbs and the Wizard
+                        // route STILL isn't registered — drop to avoid
+                        // an infinite loop, but log the path so the
+                        // drop is debuggable (slice-30 review NON-BLOCKER #7).
+                        Debug.WriteLine(
+                            $"App.HandleVerb(open-file): navigation failed on replay for '{tokens[1]}'; dropping verb.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"App.HandleVerb(open-file): {ex}");
                 }
                 break;
 

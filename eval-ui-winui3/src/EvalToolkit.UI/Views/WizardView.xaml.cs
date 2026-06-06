@@ -7,6 +7,7 @@ using EvalToolkit.UI.Services;
 using EvalToolkit.UI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Navigation;
 using Microsoft.Web.WebView2.Core;
 using Windows.ApplicationModel.DataTransfer;
 
@@ -50,6 +51,23 @@ public sealed partial class WizardView : Page
         // produces a new rendering. ReportHtml is set on the UI thread
         // by ScoreViewModel.ApplySuccess, so we don't need to dispatch.
         ViewModel.Score.PropertyChanged += OnScoreVmPropertyChanged;
+    }
+
+    /// <summary>
+    /// Slice 30 (FTA): when navigated to with an
+    /// <see cref="OpenEvalSetRequest"/> parameter (set by
+    /// <see cref="FileActivationRouter"/>), hydrate the wizard from
+    /// the on-disk eval set and land in Step 4 (editor) with the CSV
+    /// loaded. Fire-and-forget the async hydration on the UI thread —
+    /// OnNavigatedTo cannot be async-awaited by the navigation system.
+    /// </summary>
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        if (e.Parameter is OpenEvalSetRequest request)
+        {
+            _ = ViewModel.OpenExistingEvalSetAsync(request);
+        }
     }
 
     // Slice 27: render generation counter so a stale render that
