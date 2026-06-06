@@ -437,18 +437,46 @@ public sealed class EvalGenJobService : IEvalGenJobService
 }
 
 /// <summary>
-/// Event payload for <see cref="EvalGenJobService.JobStateChanged"/>.
+/// Distinguishes which job pipeline raised
+/// <see cref="JobStateChangedEventArgs"/>. Slice 28 added this so the
+/// tray-toast formatter (and any other consumer) can phrase notifications
+/// correctly for gen vs score completions instead of guessing from the
+/// directory name. Defaults to <see cref="Generation"/> so older call
+/// sites that constructed args without a kind keep behaving as
+/// "gen-job" events.
 /// </summary>
-/// <param name="JobDirectory">Absolute path to the job folder.</param>
-/// <param name="Status">New status reflected in the just-written metadata.</param>
+public enum JobKind
+{
+    Generation = 0,
+    Scoring = 1,
+}
+
+/// <summary>
+/// Event payload for <see cref="IEvalGenJobService.JobStateChanged"/>
+/// and <see cref="IEvalScoreJobService.JobStateChanged"/>.
+/// </summary>
+/// <remarks>
+/// Slice 28 (GPT-5.5 code review blocker): the score pipeline now raises
+/// this event too, so consumers like the tray-icon service can fire
+/// toasts for both gen and score terminal states. <see cref="Kind"/>
+/// lets the consumer pick the right phrasing; existing constructor
+/// keeps the gen default to avoid touching unrelated call sites.
+/// </remarks>
 public sealed class JobStateChangedEventArgs : EventArgs
 {
     public JobStateChangedEventArgs(string jobDirectory, JobStatus status)
+        : this(jobDirectory, status, JobKind.Generation)
+    {
+    }
+
+    public JobStateChangedEventArgs(string jobDirectory, JobStatus status, JobKind kind)
     {
         JobDirectory = jobDirectory;
         Status = status;
+        Kind = kind;
     }
 
     public string JobDirectory { get; }
     public JobStatus Status { get; }
+    public JobKind Kind { get; }
 }

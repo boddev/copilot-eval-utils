@@ -31,6 +31,30 @@ public sealed partial class ShellWindow : Window
         // A reasonable default size; the user's last position is restored
         // by a window-state service introduced in winui-jobs-history.
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
+
+        // Slice 28: route the window X click through the tray service
+        // so the app stays alive in the notification area. The tray's
+        // Exit menu sets Tray.IsExiting before raising ExitRequested,
+        // and App.OnTrayExitRequested calls Application.Exit() — at
+        // that point Closing fires again with IsExiting=true and we
+        // let it proceed.
+        AppWindow.Closing += OnAppWindowClosing;
+    }
+
+    private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs e)
+    {
+        // Tray may be null in very early teardown or if a future refactor
+        // bypasses initialization; in that case allow the close to
+        // proceed so the app can still exit normally.
+        var tray = App.Current.Tray;
+        if (tray is null || tray.IsExiting)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        tray.HideToTray();
+        tray.ShowFirstHideHint();
     }
 
     /// <summary>

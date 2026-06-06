@@ -6,6 +6,7 @@ using EvalToolkit.EvalScore.Preflight;
 using EvalToolkit.EvalScore.Reporting;
 using EvalToolkit.EvalScore.Scoring;
 using EvalToolkit.EvalScore.Writers;
+using EvalToolkit.Jobs;
 using EvalToolkit.UI.Editor;
 using EvalToolkit.WorkIQ;
 
@@ -67,6 +68,15 @@ public sealed class EvalScoreJobService : IEvalScoreJobService
     public Func<CancellationToken, Task<bool>> EulaApprover { get; init; } =
         _ => Task.FromResult(false);
 
+    /// <summary>
+    /// Raised when a score job reaches a terminal state. Slice 28
+    /// (GPT-5.5 code-review blocker) added this so the tray-icon
+    /// service can notify on background score completions too, not
+    /// just gen. Subscriber exceptions are swallowed inside the
+    /// raiser; faults must never escape into the scoring pipeline.
+    /// </summary>
+    public event EventHandler<JobStateChangedEventArgs>? JobStateChanged;
+
     public async Task<EvalScoreResult> RunAsync(
         EvalScoreRequest request,
         IProgress<JobProgress>? progress,
@@ -88,6 +98,13 @@ public sealed class EvalScoreJobService : IEvalScoreJobService
             throw new InvalidOperationException("Output directory is required.");
         }
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Slice 28 (GPT-5.5 code-review blocker): wrap the pipeline so a
+        // terminal state always raises JobStateChanged — the tray-icon
+        // service relies on this for score-completion toasts. Validation
+        // failures above don't fire (no work was started).
+        try
+        {
 
         // 1. Load EvalSet (sync — caller wraps in Task.Run if needed).
         progress?.Report(new JobProgress("Loading", null, $"Loading EvalSet: {request.EvalSetPath}"));
@@ -268,13 +285,45 @@ public sealed class EvalScoreJobService : IEvalScoreJobService
             100,
             $"Scoring complete. Pass={summary.PassCount} Fail={summary.FailCount} Avg={summary.AverageScore}"));
 
-        return new EvalScoreResult(
+        var scoreResult = new EvalScoreResult(
             ReportPath: reportPath,
             ScoredCsvPath: scoredCsvPath,
             TotalScored: summary.TotalQuestions,
             PassCount: summary.PassCount,
             FailCount: summary.FailCount,
             AverageScore: summary.AverageScore);
+        RaiseStateChanged(request.OutputDir, JobStatus.Complete);
+        return scoreResult;
+
+        }
+        catch (OperationCanceledException)
+        {
+            // Honor user cancellation — surface as Cancelled, not Failed.
+            // (GPT-5.5 slice-26 review: never collapse cancellation into
+            // a generic error path.)
+            RaiseStateChanged(request.OutputDir, JobStatus.Cancelled);
+            throw;
+        }
+        catch
+        {
+            RaiseStateChanged(request.OutputDir, JobStatus.Failed);
+            throw;
+        }
+    }
+
+    private void RaiseStateChanged(string jobDirectory, JobStatus status)
+    {
+        try
+        {
+            JobStateChanged?.Invoke(
+                this,
+                new JobStateChangedEventArgs(jobDirectory, status, JobKind.Scoring));
+        }
+        catch
+        {
+            // Subscriber faults must never leak into the scoring
+            // pipeline (mirrors EvalGenJobService.RaiseStateChanged).
+        }
     }
 
     /// <summary>

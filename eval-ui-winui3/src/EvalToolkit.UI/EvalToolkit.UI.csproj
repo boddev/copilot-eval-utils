@@ -61,6 +61,7 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Markdig" />
+    <PackageReference Include="H.NotifyIcon.WinUI" />
   </ItemGroup>
 
   <ItemGroup>

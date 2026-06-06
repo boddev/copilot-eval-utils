@@ -176,5 +176,14 @@
     -->
     <PackageVersion Include="Markdig" Version="0.42.0" />
 
+    <!--
+      Slice 28 winui-native-plus-tray — H.NotifyIcon.WinUI provides the
+      WinUI 3 TaskbarIcon for the system tray. 2.3.0 is current stable.
+      GPT-5.5 plan-review noted the package targets WindowsAppSDK 1.6;
+      our direct 2.1.3 reference wins on restore. Verified clean restore
+      after addition.
+    -->
+    <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.3.0" />
+
   </ItemGroup>
 </Project>

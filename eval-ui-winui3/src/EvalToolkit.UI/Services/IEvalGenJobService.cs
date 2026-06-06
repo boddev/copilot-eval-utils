@@ -15,4 +15,15 @@ public interface IEvalGenJobService
         JobRequest request,
         IProgress<JobProgress>? progress,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Raised when a job transitions to a new persistent state
+    /// (Started / Complete / Failed / Cancelled). Used by the jobs
+    /// sidebar to refresh and by the tray-icon service to fire
+    /// background-completion toasts. Promoted onto the interface in
+    /// slice 28 (GPT-5.5 code-review finding #7) so consumers can take
+    /// the abstraction instead of the concrete service and so a future
+    /// fake can drive the same event surface in tests.
+    /// </summary>
+    event EventHandler<JobStateChangedEventArgs>? JobStateChanged;
 }

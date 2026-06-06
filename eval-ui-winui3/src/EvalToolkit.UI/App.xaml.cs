@@ -23,6 +23,7 @@ public partial class App : Application
     public IEvalGenJobService JobService { get; private set; } = null!;
     public IEvalScoreJobService ScoreService { get; private set; } = null!;
     public IWebView2RuntimeService WebView2Runtime { get; private set; } = null!;
+    public ITrayIconService Tray { get; private set; } = null!;
     public MainShellViewModel? MainShell { get; private set; }
     public string WorkspaceRoot { get; private set; } = null!;
 
@@ -87,6 +88,19 @@ public partial class App : Application
         Navigation.NavigateTo(typeof(Views.MainShell));
         ShellWindow.Activate();
 
+        // Slice 28: system-tray integration. Initialize AFTER
+        // ShellWindow.Activate() so AppWindow is non-null and the tray
+        // can hook the window for show/hide. Tray subscribes to BOTH
+        // job services' JobStateChanged events (gen + score) so
+        // background-completion toasts fire regardless of pipeline
+        // (GPT-5.5 code-review blocker). ExitRequested → Application.Exit()
+        // so the tray menu can actually shut the app down (the
+        // ShellWindow Closing handler reroutes window X clicks to
+        // hide-to-tray).
+        Tray = new TrayIconService(JobService, ScoreService, WorkspaceRoot, UiDispatcher);
+        Tray.ExitRequested += OnTrayExitRequested;
+        Tray.Initialize(ShellWindow);
+
         // Drain any activations that arrived between Program.Main
         // hooking primary.Activated and OnLaunched finishing shell
         // construction. Slice 21 only needs to bring the window to
@@ -96,6 +110,16 @@ public partial class App : Application
         {
             HandleActivation(pending);
         }
+    }
+
+    private void OnTrayExitRequested(object? sender, EventArgs e)
+    {
+        // Tray "Exit" was picked. ShellWindow.Closing checks
+        // Tray.IsExiting before cancelling the close, so this Exit
+        // call cleanly tears the app down. Dispose the tray first so
+        // the icon goes away immediately even if XAML shutdown stalls.
+        try { Tray?.Dispose(); } catch { /* swallow */ }
+        Exit();
     }
 
     /// <summary>
@@ -144,7 +168,17 @@ public partial class App : Application
     {
         // Slice 21: bring window forward; future slices parse args.Kind
         // (File, Protocol, Launch...) and route to the appropriate view.
-        ShellWindow?.BringToFront();
+        // Slice 28: if the user previously hid-to-tray, BringToFront alone
+        // won't restore visibility — delegate to Tray.ShowWindow which
+        // calls AppWindow.Show() first.
+        if (Tray is not null && Tray.IsWindowHidden)
+        {
+            Tray.ShowWindow();
+        }
+        else
+        {
+            ShellWindow?.BringToFront();
+        }
         _ = args;
     }
 }
