@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Slice 33 msix-packaging — single-project MSIX manifest for
+  EvalToolkit.UI. Drives the packaged head when msbuild is invoked
+  with /p:WindowsPackageType=MSIX (see packaging/msix/build-msix.ps1).
+
+  Identity intentionally omits ProcessorArchitecture; the single-
+  project MSIX targets derive it from the /p:Platform passed at
+  build time, and an unsubstituted literal here would fail MakeAppx
+  validation (GPT-5.5 slice-33 plan review BLOCKER #1).
+
+  Publisher=CN=EvalToolkit.Dev is the self-signing placeholder
+  consumed by slice 34 signing; CI / production builds will override
+  it to match the Trusted Signing cert subject (msbuild property
+  /p:AppxPackageSigningEnabled + /p:PackageCertificateThumbprint).
+
+  TODO(slice-34): GPT-5.5 slice-33 code-review BLOCKER #1 flagged that
+  the Identity Publisher MUST exactly match the signing certificate
+  Subject. Slice 34 needs to (a) plumb a Publisher MSBuild override
+  through packaging/msix/build-msix.ps1, and (b) assert post-build via
+  `makeappx unpack` that the produced Identity Publisher matches the
+  intended cert Subject before signing.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 com desktop rescap">
+
+  <Identity
+    Name="EvalToolkit.UI"
+    Publisher="CN=EvalToolkit.Dev"
+    Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>EvalToolkit</DisplayName>
+    <PublisherDisplayName>EvalToolkit</PublisherDisplayName>
+    <Logo>Assets\Packaging\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="EvalToolkit"
+        Description="Evaluation toolkit for Microsoft 365 Copilot"
+        Square150x150Logo="Assets\Packaging\Square150x150Logo.png"
+        Square44x44Logo="Assets\Packaging\Square44x44Logo.png"
+        BackgroundColor="transparent">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Packaging\Wide310x150Logo.png"
+          ShortName="EvalToolkit" />
+        <uap:SplashScreen
+          Image="Assets\Packaging\SplashScreen.png"
+          BackgroundColor="#1F1F23" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!--
+          Slice 30 file-type associations. Three app-owned alias
+          extensions; never .csv / .md / .json system-wide. The
+          slice-30 FileActivationRouter strips the alias suffix and
+          dispatches to in-app or shell handlers.
+        -->
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="evaltoolkit-evalset">
+            <uap:DisplayName>EvalToolkit Eval Set</uap:DisplayName>
+            <uap:Logo>Assets\Packaging\evalset-logo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="application/vnd.evaltoolkit.evalset+json">.evalgenset</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="evaltoolkit-results">
+            <uap:DisplayName>EvalToolkit Score Results</uap:DisplayName>
+            <uap:Logo>Assets\Packaging\results-logo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="text/csv">.evalscoreresults</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="evaltoolkit-report">
+            <uap:DisplayName>EvalToolkit Eval Report</uap:DisplayName>
+            <uap:Logo>Assets\Packaging\report-logo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType ContentType="text/markdown">.evalreport</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+
+        <!--
+          Slice 31 toast COM activator. The Arguments value below
+          (4 dashes + "AppNotificationActivated:") is the Windows
+          App SDK contract — do NOT change. CLSID mirrors
+          Services/NotificationActivatorIds.cs (15FDE3FE-...).
+        -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer
+              Executable="EvalToolkit.UI.exe"
+              DisplayName="EvalToolkit Notifications"
+              Arguments="----AppNotificationActivated:">
+              <com:Class
+                Id="15FDE3FE-65CF-4E3D-8B0B-3C4B8B1BD68F"
+                DisplayName="EvalToolkit Toast Activator" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation
+            ToastActivatorCLSID="15FDE3FE-65CF-4E3D-8B0B-3C4B8B1BD68F" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- runFullTrust is mandatory for WinUI 3 desktop apps. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

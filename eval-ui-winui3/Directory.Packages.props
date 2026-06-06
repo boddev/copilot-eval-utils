@@ -185,5 +185,17 @@
     -->
     <PackageVersion Include="H.NotifyIcon.WinUI" Version="2.3.0" />
 
+    <!--
+      Slice 33 msix-packaging — needed by the
+      WinAppSdkValidateAppxManifestItems MSBuild task shipped inside
+      Microsoft.Windows.SDK.BuildTools.MSIX (tools\net6.0). The task
+      binds to System.Security.Permissions 8.0.0 specifically; the
+      .NET 10 SDK doesn't surface that assembly to the task host
+      unless we explicitly pin it via PackageReference in
+      EvalToolkit.UI.csproj. Symptom without this pin: msbuild fails
+      with MSB4018 FileNotFoundException during /p:WindowsPackageType=MSIX.
+    -->
+    <PackageVersion Include="System.Security.Permissions" Version="8.0.0" />
+
   </ItemGroup>
 </Project>
