@@ -1,0 +1,6 @@
+{
+  "_comment": "Slice 34 signing — Azure Trusted Signing dmdf (digest metadata) template. Real metadata.json is generated at sign time from environment variables / CI secrets via sign-msix.ps1 -Mode AzureTrustedSigning. NEVER fill in real Endpoint/Account/CertificateProfile values here and commit them.",
+  "Endpoint": "<TRUSTED_SIGNING_ENDPOINT — e.g. https://eus.codesigning.azure.net>",
+  "CodeSigningAccountName": "<TRUSTED_SIGNING_ACCOUNT>",
+  "CertificateProfileName": "<TRUSTED_SIGNING_PROFILE>"
+}

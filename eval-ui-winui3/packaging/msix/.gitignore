@@ -1,0 +1,15 @@
+# Slice 34 signing — dev self-signed cert + password are NEVER committed.
+# Live under %LOCALAPPDATA%\EvalToolkit\dev-signing\ by default, but if a
+# developer overrides -DevCertPath to point inside the repo, this gitignore
+# blocks accidental commits.
+dev-signing/
+*.pfx
+*.cer
+*.password.txt
+
+# Slice 33 build artefacts.
+dist/
+
+# Slice 34 Azure Trusted Signing metadata is a TEMPLATE only;
+# real metadata.json is generated from env vars at sign time.
+azure-signing/metadata.json

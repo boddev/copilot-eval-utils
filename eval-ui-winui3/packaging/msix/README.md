@@ -424,6 +424,151 @@ Outputs land at `packaging\msix\dist\x64\EvalToolkit.UI_*_x64.msix`
 hashes and byte sizes are printed at the end for release-asset
 recording.
 
+---
+
+## Slice 34: code signing
+
+The MSIXes produced by `build-msix.ps1` are **unsigned** and cannot be
+installed with `Add-AppxPackage` until they pass through
+`packaging\msix\sign-msix.ps1`. The signer derives the manifest
+`Identity Publisher` from the actual signing certificate and patches it
+into the unpacked MSIX before repacking + signing, so the manifest
+Publisher and the signer cert Subject are guaranteed byte-for-byte
+identical (per GPT-5.5 slice-34 plan review BLOCKER #2).
+
+### Modes
+
+- **`SelfSigned`** (default, for local dev sideload):
+  Generates / reuses a developer self-signed code-signing cert at
+  `%LOCALAPPDATA%\EvalToolkit\dev-signing\EvalToolkit.Dev.pfx`
+  (RSA 2048, EKU Code Signing, valid 2 years by default). PFX password
+  is stored next to the PFX as a DPAPI-encrypted blob (`.password.txt`)
+  that only the current user on the current machine can decrypt. With
+  `-TrustDevCert` (requires elevation) it also imports the public cert
+  into `Cert:\LocalMachine\TrustedPeople` so `Add-AppxPackage` accepts
+  the signed MSIX. Without `-TrustDevCert`, the signed MSIX is still
+  produced (and `signtool verify /pa` chain-check is degraded to a
+  warning), but install will fail with `0x800B0109` "root not trusted".
+
+- **`AzureTrustedSigning`** (for CI / release): defers signing to the
+  Microsoft Trusted Signing service via
+  `signtool sign /dlib Azure.CodeSigning.Dlib.dll /dmdf metadata.json`,
+  using `DefaultAzureCredential` for authentication. The dlib is
+  auto-discovered from the NuGet package
+  `Microsoft.ArtifactSigning.Client` (current) or
+  `Microsoft.Trusted.Signing.Client` (legacy fallback), restricted to
+  the x64 build to match the x64 `signtool.exe`. `-SigningPublisher`
+  MUST be supplied explicitly with the canonical Subject DN of the
+  Trusted Signing certificate profile.
+
+### Quickstart — local dev sideload
+
+```pwsh
+# Sign without trusting (smoke check signature attaches):
+pwsh .\packaging\msix\sign-msix.ps1 `
+     -MsixPath .\packaging\msix\dist\x64\EvalToolkit.UI_0.1.0.0_x64.msix `
+     -Mode SelfSigned
+
+# Sign + trust dev cert + install + verify (requires elevated terminal):
+pwsh .\packaging\msix\sign-msix.ps1 `
+     -MsixPath .\packaging\msix\dist\x64\EvalToolkit.UI_0.1.0.0_x64.msix `
+     -Mode SelfSigned -TrustDevCert -VerifyInstall
+
+# Re-sign arm64 the same way:
+pwsh .\packaging\msix\sign-msix.ps1 `
+     -MsixPath .\packaging\msix\dist\arm64\EvalToolkit.UI_0.1.0.0_arm64.msix `
+     -Mode SelfSigned
+
+# Regenerate the dev cert (e.g., to migrate a legacy plain-text password
+# to DPAPI, or after expiry):
+pwsh .\packaging\msix\sign-msix.ps1 -MsixPath ... -Mode SelfSigned -Force
+```
+
+Signed output: `packaging\msix\dist\<arch>\signed\EvalToolkit.UI_*.msix`.
+
+### Quickstart — Azure Trusted Signing (CI / release)
+
+```pwsh
+# 1. Install the dlib package somewhere on disk that sign-msix.ps1 can find:
+nuget install Microsoft.ArtifactSigning.Client -ExcludeVersion `
+        -OutputDirectory $env:USERPROFILE\.nuget\packages
+
+# 2. Copy the metadata template and fill in your account / profile / endpoint:
+Copy-Item .\packaging\msix\azure-signing\metadata.template.json `
+          .\packaging\msix\azure-signing\metadata.json
+# Edit metadata.json: Endpoint, CodeSigningAccountName, CertificateProfileName.
+
+# 3. Sign (auth via DefaultAzureCredential — workload identity, env vars,
+#    az login, etc. — set per your CI environment):
+pwsh .\packaging\msix\sign-msix.ps1 `
+     -MsixPath .\packaging\msix\dist\x64\EvalToolkit.UI_0.1.0.0_x64.msix `
+     -Mode AzureTrustedSigning `
+     -SigningPublisher 'CN=Contoso, O=Contoso Corp, L=Redmond, S=WA, C=US' `
+     -TrustedSigningMetadataPath .\packaging\msix\azure-signing\metadata.json
+```
+
+The default `-TimestampUrl` is `http://timestamp.acs.microsoft.com`
+(Microsoft Public RSA Time Stamping Authority), which is the
+recommended TSA for both self-signed dev and Trusted Signing.
+
+### Trust model & where dev cert lives
+
+| Path / scope                                              | What                                                       |
+| --------------------------------------------------------- | ---------------------------------------------------------- |
+| `%LOCALAPPDATA%\EvalToolkit\dev-signing\*.pfx`            | Private key, restricted ACL (current user FullControl only) |
+| `%LOCALAPPDATA%\EvalToolkit\dev-signing\*.pfx.password.txt` | DPAPI-encrypted PFX password (current user + machine only) |
+| `Cert:\LocalMachine\TrustedPeople` (with `-TrustDevCert`)   | Public cert only — what `Add-AppxPackage` actually consults |
+
+The PFX and password files are gitignored. To nuke the dev cert and
+start over: `Remove-Item -Recurse $env:LOCALAPPDATA\EvalToolkit\dev-signing`,
+then re-run `sign-msix.ps1` (it regenerates on demand).
+
+### Verification chain
+
+`sign-msix.ps1` runs three independent checks on every signed MSIX:
+
+1. **Structural signature** via `Get-AuthenticodeSignature` — confirms
+   a signature is attached and the signer cert Subject equals the
+   expected Publisher. Always runs, works without trust.
+2. **Manifest cross-check** — unpacks the signed MSIX and confirms
+   `Identity Publisher` still equals the expected Publisher post-repack.
+   Always runs.
+3. **Chain verification** via `signtool verify /pa /v` — degraded to a
+   warning when `-AllowUntrustedRoot` is in effect (self-signed without
+   `-TrustDevCert`), strict failure otherwise.
+
+If `-VerifyInstall` is passed, the script also `Add-AppxPackage`s the
+signed MSIX and queries it back via `Get-AppxPackage`. Known
+deployment HRESULTs (`0x800B0109`, `0x800B0100`, `0x80073CF0`,
+`0x80073CF3`, `0x80073CFB`, `0x80073CFD`, `0x80073D02`, `0x80073D06`)
+are mapped to actionable guidance in the error message.
+
+### GPT-5.5 code review adoption (slice 34)
+
+GPT-5.5 (`winui3-signing-code-gpt55`) reviewed the slice-34 diff and
+returned 1 BLOCKER + 4 NBs. All four adopted:
+
+- **BLOCKER #1** — Trusted Signing dlib auto-discovery: prefer the
+  current `Microsoft.ArtifactSigning.Client` package over the older
+  `Microsoft.Trusted.Signing.Client` (kept as legacy fallback), and
+  filter for the `\x64\` variant to match the x64 `signtool.exe` that
+  `Get-LatestSdkTool` selects.
+- **NB #2** — write to a staging `.staging.msix` path first, then
+  atomically `Move-Item` to the final `OutputPath` only after signing
+  + verification succeed. Avoids leaving a Publisher-patched-but-unsigned
+  MSIX at `OutputPath` when signtool fails mid-flight.
+- **NB #3** — persist the dev PFX password as a DPAPI-encrypted blob
+  via `ConvertFrom-SecureString` instead of plain-text Base64. Read
+  path detects legacy plain-text format and warns the user to re-run
+  with `-Force` to migrate.
+- **NB #4** — soften wording for `0x80073CF0` (broader than
+  "publisher mismatch"); add `0x800B0100` (no signature), `0x80073CFB`
+  (already installed), `0x80073D02` (resources in use), and
+  `0x80073D06` (higher version installed) to the HRESULT guidance map.
+
+NB #5 (CI install guidance — `Add-AppxPackage` flakiness on hosted
+runners) is deferred to slice 35 (`ci-workflow`).
+
 ### How to validate a produced MSIX
 
 Slice 33 produces **unsigned, structurally-valid** MSIX. `makeappx
