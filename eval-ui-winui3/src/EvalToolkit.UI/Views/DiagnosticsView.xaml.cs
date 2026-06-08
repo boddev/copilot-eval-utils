@@ -48,6 +48,21 @@ public sealed partial class DiagnosticsView : Page
         }
     }
 
+    private void BackButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Prefer the back-stack (returns to whatever launched diagnostics);
+        // fall back to the wizard route if there's nothing to go back to.
+        var nav = App.Current.Navigation;
+        if (nav.CanGoBack)
+        {
+            nav.GoBack();
+        }
+        else
+        {
+            nav.NavigateTo("Wizard");
+        }
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         // Any VM change → re-evaluate every computed display property.
