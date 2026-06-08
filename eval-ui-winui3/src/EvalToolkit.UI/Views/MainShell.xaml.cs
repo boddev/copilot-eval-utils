@@ -117,4 +117,12 @@ public sealed partial class MainShell : Page
     {
         App.Current.Navigation.NavigateTo("Diagnostics");
     }
+
+    private void NewEvaluationButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Always lands on a fresh wizard (Frame caching is disabled), so
+        // this doubles as "leave the diagnostics screen" and "start a new
+        // job" from anywhere in the shell.
+        App.Current.Navigation.NavigateTo("Wizard");
+    }
 }

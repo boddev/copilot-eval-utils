@@ -360,7 +360,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
             Count = Describe.Count,
             Extensions = Describe.Extensions,
             Provider = Describe.Provider,
-            Model = Describe.Model,
+            Model = Describe.EffectiveModel,
             M365TenantId = string.IsNullOrWhiteSpace(Describe.M365TenantId) ? null : Describe.M365TenantId,
             ConnectorSchemaPath = string.IsNullOrWhiteSpace(Describe.ConnectorSchemaPath) ? null : Describe.ConnectorSchemaPath,
             WorkspaceRoot = _workspaceRoot,

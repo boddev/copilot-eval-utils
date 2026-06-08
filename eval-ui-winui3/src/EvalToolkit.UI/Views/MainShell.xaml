@@ -17,7 +17,7 @@
                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,0,1,0">
-            <Grid RowDefinitions="Auto,*,Auto,Auto">
+            <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 
                 <Grid Grid.Row="0" Padding="16,12" ColumnDefinitions="*,Auto">
                     <TextBlock Grid.Column="0"
@@ -32,7 +32,20 @@
                     </Button>
                 </Grid>
 
-                <ListView Grid.Row="1"
+                <Button Grid.Row="1"
+                        x:Name="NewEvaluationButton"
+                        Margin="16,0,16,8"
+                        HorizontalAlignment="Stretch"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Click="NewEvaluationButton_Click"
+                        ToolTipService.ToolTip="Start a new evaluation job">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE710;" FontSize="14"/>
+                        <TextBlock Text="New evaluation"/>
+                    </StackPanel>
+                </Button>
+
+                <ListView Grid.Row="2"
                           x:Name="JobsList"
                           SelectionMode="Single"
                           IsItemClickEnabled="True"
@@ -65,7 +78,7 @@
                     </ListView.ItemTemplate>
                 </ListView>
 
-                <TextBlock Grid.Row="2"
+                <TextBlock Grid.Row="3"
                            x:Name="EmptyHintText"
                            Margin="16,8"
                            Text="No jobs yet. Run an evaluation to populate this list."
@@ -74,7 +87,7 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                            Visibility="Collapsed"/>
 
-                <Border Grid.Row="3"
+                <Border Grid.Row="4"
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="0,1,0,0"
                         Padding="12,8">

@@ -349,4 +349,88 @@ public sealed partial class WizardView : Page
             System.Diagnostics.Debug.WriteLine($"Schema browse failed: {ex}");
         }
     }
+
+    // Window height (physical px) captured just before the advanced
+    // options expand, so collapsing restores the user's original size.
+    private int _heightBeforeAdvancedExpand;
+
+    /// <summary>
+    /// Grow the window when the advanced-options panel opens so its extra
+    /// fields are visible without scrolling. Resize is clamped to the
+    /// monitor work area and skipped when the window is maximized.
+    /// </summary>
+    private void AdvancedOptionsExpander_Expanding(
+        Microsoft.UI.Xaml.Controls.Expander sender,
+        Microsoft.UI.Xaml.Controls.ExpanderExpandingEventArgs args)
+    {
+        var appWindow = App.Current.ShellWindow?.AppWindow;
+        if (appWindow is null)
+        {
+            return;
+        }
+        if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
+            && presenter.State != Microsoft.UI.Windowing.OverlappedPresenterState.Restored)
+        {
+            // Don't fight a maximized / minimized window.
+            return;
+        }
+
+        _heightBeforeAdvancedExpand = appWindow.Size.Height;
+
+        // The advanced panel is authored in DIPs; convert to physical px.
+        double scale = XamlRoot?.RasterizationScale ?? 1.0;
+        int delta = (int)System.Math.Round(260 * scale);
+
+        var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(
+            appWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest);
+        int workTop = area.WorkArea.Y;
+        int workHeight = area.WorkArea.Height;
+
+        int newHeight = System.Math.Min(appWindow.Size.Height + delta, workHeight);
+        if (newHeight <= appWindow.Size.Height)
+        {
+            return;
+        }
+
+        int x = appWindow.Position.X;
+        int y = appWindow.Position.Y;
+        // Nudge the window up if growing would push its bottom off-screen.
+        if (y + newHeight > workTop + workHeight)
+        {
+            y = System.Math.Max(workTop, workTop + workHeight - newHeight);
+        }
+
+        appWindow.MoveAndResize(
+            new Windows.Graphics.RectInt32(x, y, appWindow.Size.Width, newHeight));
+    }
+
+    /// <summary>
+    /// Restore the pre-expand window height when the advanced-options
+    /// panel collapses.
+    /// </summary>
+    private void AdvancedOptionsExpander_Collapsed(
+        Microsoft.UI.Xaml.Controls.Expander sender,
+        Microsoft.UI.Xaml.Controls.ExpanderCollapsedEventArgs args)
+    {
+        var appWindow = App.Current.ShellWindow?.AppWindow;
+        if (appWindow is null || _heightBeforeAdvancedExpand <= 0)
+        {
+            return;
+        }
+        if (appWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
+            && presenter.State != Microsoft.UI.Windowing.OverlappedPresenterState.Restored)
+        {
+            return;
+        }
+        if (_heightBeforeAdvancedExpand >= appWindow.Size.Height)
+        {
+            // User already shrank it back (or smaller) themselves.
+            _heightBeforeAdvancedExpand = 0;
+            return;
+        }
+
+        appWindow.Resize(
+            new Windows.Graphics.SizeInt32(appWindow.Size.Width, _heightBeforeAdvancedExpand));
+        _heightBeforeAdvancedExpand = 0;
+    }
 }

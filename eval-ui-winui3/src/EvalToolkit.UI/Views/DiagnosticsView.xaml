@@ -19,15 +19,26 @@
     <ScrollViewer Padding="24">
         <StackPanel Spacing="16" MaxWidth="900" HorizontalAlignment="Stretch">
 
-            <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Grid.Column="0" Spacing="4">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <Button Grid.Column="0"
+                        x:Name="BackButton"
+                        VerticalAlignment="Top"
+                        Margin="0,4,12,0"
+                        Click="BackButton_Click"
+                        ToolTipService.ToolTip="Back to the evaluation wizard">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE72B;" FontSize="14"/>
+                        <TextBlock Text="Back"/>
+                    </StackPanel>
+                </Button>
+                <StackPanel Grid.Column="1" Spacing="4">
                     <TextBlock Text="Diagnostics"
                                FontSize="24"
                                FontWeight="SemiBold"/>
                     <TextBlock Text="Subsystem health probes for support / CI smoke."
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>
-                <Button Grid.Column="1"
+                <Button Grid.Column="2"
                         VerticalAlignment="Top"
                         Command="{x:Bind ViewModel.RefreshCommand}"
                         Style="{ThemeResource AccentButtonStyle}">

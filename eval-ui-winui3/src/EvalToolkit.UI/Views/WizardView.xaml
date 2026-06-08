@@ -162,7 +162,11 @@
                                      Text="{Binding Extensions, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
-                        <Expander Header="Advanced options" HorizontalAlignment="Stretch">
+                        <Expander x:Name="AdvancedOptionsExpander"
+                                  Header="Advanced options"
+                                  HorizontalAlignment="Stretch"
+                                  Expanding="AdvancedOptionsExpander_Expanding"
+                                  Collapsed="AdvancedOptionsExpander_Collapsed">
                             <Grid ColumnSpacing="16" RowSpacing="12" Padding="0,8,0,0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -175,30 +179,96 @@
                                 </Grid.RowDefinitions>
 
                                 <ComboBox Grid.Row="0" Grid.Column="0"
-                                          Header="Generation provider"
                                           ItemsSource="{x:Bind vm:DescribeViewModel.ProviderOptions}"
                                           DisplayMemberPath="Label"
                                           SelectedValuePath="Value"
                                           SelectedValue="{Binding Provider, Mode=TwoWay}"
-                                          HorizontalAlignment="Stretch"/>
+                                          HorizontalAlignment="Stretch">
+                                    <ComboBox.Header>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Generation provider" VerticalAlignment="Center"/>
+                                            <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                      ToolTipService.ToolTip="The service used to generate evaluation questions from your dataset. Microsoft 365 Copilot and WorkIQ route through your local sign-in; Azure OpenAI and GitHub Copilot CLI require their own configuration."/>
+                                        </StackPanel>
+                                    </ComboBox.Header>
+                                </ComboBox>
+
+                                <!-- Model field adapts to the chosen provider:
+                                     GitHub Copilot -> editable dropdown of known models,
+                                     Azure OpenAI -> free-text deployment name,
+                                     M365 / WorkIQ -> managed by the provider (Auto). -->
+                                <ComboBox Grid.Row="0" Grid.Column="1"
+                                          IsEditable="True"
+                                          HorizontalAlignment="Stretch"
+                                          ItemsSource="{x:Bind ViewModel.Describe.AvailableModels, Mode=OneWay}"
+                                          Text="{x:Bind ViewModel.Describe.Model, Mode=TwoWay}"
+                                          Visibility="{x:Bind ViewModel.Describe.IsModelDropdown, Mode=OneWay}">
+                                    <ComboBox.Header>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Model or deployment name" VerticalAlignment="Center"/>
+                                            <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                      ToolTipService.ToolTip="Which model the provider should use. GitHub Copilot: pick from the list or type a model id. Azure OpenAI: enter your deployment name. Microsoft 365 / WorkIQ: managed automatically (Auto)."/>
+                                        </StackPanel>
+                                    </ComboBox.Header>
+                                </ComboBox>
                                 <TextBox Grid.Row="0" Grid.Column="1"
-                                         Header="Model or deployment name"
-                                         PlaceholderText="Optional"
-                                         Text="{Binding Model, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                         PlaceholderText="Deployment name"
+                                         Text="{x:Bind ViewModel.Describe.Model, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         Visibility="{x:Bind ViewModel.Describe.IsModelTextBox, Mode=OneWay}">
+                                    <TextBox.Header>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Model or deployment name" VerticalAlignment="Center"/>
+                                            <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                      ToolTipService.ToolTip="Which model the provider should use. GitHub Copilot: pick from the list or type a model id. Azure OpenAI: enter your deployment name. Microsoft 365 / WorkIQ: managed automatically (Auto)."/>
+                                        </StackPanel>
+                                    </TextBox.Header>
+                                </TextBox>
+                                <TextBox Grid.Row="0" Grid.Column="1"
+                                         IsEnabled="False"
+                                         Text="{x:Bind ViewModel.Describe.Model, Mode=OneWay}"
+                                         Visibility="{x:Bind ViewModel.Describe.IsModelAuto, Mode=OneWay}">
+                                    <TextBox.Header>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Model or deployment name" VerticalAlignment="Center"/>
+                                            <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                      ToolTipService.ToolTip="Which model the provider should use. GitHub Copilot: pick from the list or type a model id. Azure OpenAI: enter your deployment name. Microsoft 365 / WorkIQ: managed automatically (Auto)."/>
+                                        </StackPanel>
+                                    </TextBox.Header>
+                                </TextBox>
 
                                 <TextBox Grid.Row="1" Grid.Column="0"
-                                         Header="Microsoft 365 tenant ID"
                                          PlaceholderText="Optional"
-                                         Text="{Binding M365TenantId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                         Text="{Binding M365TenantId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBox.Header>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Microsoft 365 tenant ID" VerticalAlignment="Center"/>
+                                            <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                      ToolTipService.ToolTip="Optional Microsoft Entra (Azure AD) tenant GUID to target when using a Microsoft 365 provider. Leave blank to use your default tenant."/>
+                                        </StackPanel>
+                                    </TextBox.Header>
+                                </TextBox>
                                 <Grid Grid.Row="1" Grid.Column="1" ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBox Grid.Column="0"
-                                             Header="Connector schema JSON"
                                              PlaceholderText="Optional path"
-                                             Text="{Binding ConnectorSchemaPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                             Text="{Binding ConnectorSchemaPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                        <TextBox.Header>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Text="Connector schema JSON" VerticalAlignment="Center"/>
+                                                <FontIcon Glyph="&#xE946;" FontSize="14"
+                                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                          ToolTipService.ToolTip="Optional path to a JSON file describing your connector's schema (fields and types). Used to ground generated questions in your data's structure."/>
+                                            </StackPanel>
+                                        </TextBox.Header>
+                                    </TextBox>
                                     <Button Grid.Column="1"
                                             VerticalAlignment="Bottom"
                                             Content="Browse…"
