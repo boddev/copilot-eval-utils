@@ -222,58 +222,46 @@ Respond with JSON: {{""intents"": [...]}}";
             intentsWithContext.Add((intent, relevantFacts));
         }
 
-        var contextSb = new StringBuilder();
-        for (int i = 0; i < intentsWithContext.Count; i++)
+        // The GitHub Copilot CLI provider transmits the prompt on a process
+        // command line capped at ~32K chars; for large jobs the single draft
+        // prompt overflows it. When the client advertises a prompt-size limit
+        // (IPromptSizeLimited) and the full prompt would exceed it, split the
+        // intents into the fewest batches that each fit and concatenate the
+        // drafted questions. Every other provider keeps the original
+        // single-call behavior, so output is unchanged for them.
+        int? budget = (client as IPromptSizeLimited)?.MaxPromptChars;
+        if (budget is null
+            || BuildDraftPrompt(description, BuildDraftContext(intentsWithContext)).Length <= budget.Value)
         {
-            if (i > 0) contextSb.Append("\n\n");
-            var (intent, relevantFacts) = intentsWithContext[i];
-            var assigned = intent.AssignedPrimaryRow is { } ap
-                ? $"\nAssigned primary row: {ap}"
-                : string.Empty;
-            contextSb.Append("Intent ").Append(i + 1).Append(": ")
-                .Append(intent.Intent).Append(" (")
-                .Append(intent.Category.ToWireString()).Append(", ")
-                .Append(intent.Difficulty.ToWireString()).Append(")\n");
-            contextSb.Append("Target fields: ")
-                .Append(string.Join(", ", intent.TargetFields))
-                .Append(assigned)
-                .Append("\nAvailable facts:\n");
-            for (int j = 0; j < relevantFacts.Count; j++)
-            {
-                if (j > 0) contextSb.Append('\n');
-                var f = relevantFacts[j];
-                contextSb.Append("  [").Append(f.Id).Append("] ")
-                    .Append(f.Field).Append('=').Append(FactExtractor.JsonStringify(f.Value))
-                    .Append(" [").Append(f.RowReference).Append(']');
-            }
+            return await DraftBatchAsync(intentsWithContext, factById, description, client, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        var prompt = $@"Draft natural-language questions with expected answers for each intent below.
+        var questions = new List<DraftedQuestion>(intentsWithContext.Count);
+        foreach (var batch in PartitionByBudget(intentsWithContext, description, budget.Value))
+        {
+            var batchQuestions = await DraftBatchAsync(batch, factById, description, client, cancellationToken)
+                .ConfigureAwait(false);
+            questions.AddRange(batchQuestions);
+        }
 
-## Dataset Description
-{description}
+        return questions;
+    }
 
-## Intents with Available Facts
-{contextSb}
-
-## Instructions
-For each intent, produce:
-- ""prompt"": A natural-language question as a knowledge worker would type into Copilot
-- ""category"": Same category as the intent
-- ""difficulty"": Same difficulty as the intent
-- ""expected_answer"": The correct answer derived ONLY from the facts shown. Write a concise, natural response.
-- ""supporting_facts"": Array of ""field=value"" strings that ground the answer
-- ""supporting_fact_ids"": Array of fact IDs (e.g., ""f-3"", ""f-7"") from the ""Available facts"" block that the answer is grounded in. Include only facts you actually used.
-- ""source_location"": The row reference where the primary answer data is found (use the assigned primary row when one was specified)
-
-Rules:
-- The expected_answer MUST be derivable from the facts provided — do not invent data
-- Write questions in natural language (not SQL-like or technical)
-- Expected answers should be concise but complete
-- supporting_fact_ids must reference IDs that appeared in the Available facts block for this intent
-- When an ""Assigned primary row"" is specified, source_location MUST equal that row
-
-Respond with JSON: {{""questions"": [...]}}";
+    /// <summary>
+    /// Draft questions for a single batch of intents: build the prompt, call
+    /// the LLM, and post-process the DTOs (resolving referenced rows). The DTO
+    /// at index <c>i</c> is matched to <paramref name="batch"/> index <c>i</c>,
+    /// so each batch is self-contained.
+    /// </summary>
+    private static async Task<List<DraftedQuestion>> DraftBatchAsync(
+        List<(QuestionIntent Intent, List<Fact> Facts)> batch,
+        Dictionary<string, Fact> factById,
+        string description,
+        ILlmClient client,
+        CancellationToken cancellationToken)
+    {
+        var prompt = BuildDraftPrompt(description, BuildDraftContext(batch));
 
         var result = await client.GenerateStructuredAsync<QuestionsResponse>(
             prompt,
@@ -289,7 +277,7 @@ Respond with JSON: {{""questions"": [...]}}";
         for (int i = 0; i < dtoList.Count; i++)
         {
             var dto = dtoList[i];
-            var ctx = i < intentsWithContext.Count ? intentsWithContext[i] : default;
+            var ctx = i < batch.Count ? batch[i] : default;
             var ctxFacts = ctx.Facts ?? new List<Fact>();
             var assignedPrimaryRow = ctx.Intent?.AssignedPrimaryRow;
 
@@ -349,6 +337,118 @@ Respond with JSON: {{""questions"": [...]}}";
         }
 
         return questions;
+    }
+
+    /// <summary>
+    /// Greedily pack intents into batches whose assembled draft prompt stays at
+    /// or under <paramref name="budget"/> characters. Each batch holds at least
+    /// one intent; a single intent whose prompt alone exceeds the budget is
+    /// emitted on its own and surfaces a clear error from the client preflight.
+    /// </summary>
+    private static IEnumerable<List<(QuestionIntent Intent, List<Fact> Facts)>> PartitionByBudget(
+        List<(QuestionIntent Intent, List<Fact> Facts)> all,
+        string description,
+        int budget)
+    {
+        int overhead = BuildDraftPrompt(description, string.Empty).Length;
+        var current = new List<(QuestionIntent Intent, List<Fact> Facts)>();
+        int currentContextLen = 0;
+
+        foreach (var item in all)
+        {
+            // Block as it would appear at this batch's next position (the
+            // display number barely affects length; the budget margin absorbs it).
+            string block = BuildIntentBlock(current.Count + 1, item.Intent, item.Facts);
+            int separator = current.Count == 0 ? 0 : 2; // "\n\n" between blocks
+            int projected = overhead + currentContextLen + separator + block.Length;
+
+            if (current.Count > 0 && projected > budget)
+            {
+                yield return current;
+                current = new List<(QuestionIntent Intent, List<Fact> Facts)>();
+                currentContextLen = 0;
+                block = BuildIntentBlock(1, item.Intent, item.Facts);
+                separator = 0;
+            }
+
+            current.Add(item);
+            currentContextLen += separator + block.Length;
+        }
+
+        if (current.Count > 0) yield return current;
+    }
+
+    /// <summary>Assemble the "Intents with Available Facts" context block.</summary>
+    private static string BuildDraftContext(List<(QuestionIntent Intent, List<Fact> Facts)> batch)
+    {
+        var contextSb = new StringBuilder();
+        for (int i = 0; i < batch.Count; i++)
+        {
+            if (i > 0) contextSb.Append("\n\n");
+            contextSb.Append(BuildIntentBlock(i + 1, batch[i].Intent, batch[i].Facts));
+        }
+        return contextSb.ToString();
+    }
+
+    /// <summary>Render a single intent's context block (header + facts).</summary>
+    private static string BuildIntentBlock(int displayNumber, QuestionIntent intent, List<Fact> relevantFacts)
+    {
+        var sb = new StringBuilder();
+        var assigned = intent.AssignedPrimaryRow is { } ap
+            ? $"\nAssigned primary row: {ap}"
+            : string.Empty;
+        sb.Append("Intent ").Append(displayNumber).Append(": ")
+            .Append(intent.Intent).Append(" (")
+            .Append(intent.Category.ToWireString()).Append(", ")
+            .Append(intent.Difficulty.ToWireString()).Append(")\n");
+        sb.Append("Target fields: ")
+            .Append(string.Join(", ", intent.TargetFields))
+            .Append(assigned)
+            .Append("\nAvailable facts:\n");
+        for (int j = 0; j < relevantFacts.Count; j++)
+        {
+            if (j > 0) sb.Append('\n');
+            var f = relevantFacts[j];
+            sb.Append("  [").Append(f.Id).Append("] ")
+                .Append(f.Field).Append('=').Append(FactExtractor.JsonStringify(f.Value))
+                .Append(" [").Append(f.RowReference).Append(']');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Build the draft-stage prompt around an assembled context block. The
+    /// literal text is part of the TS port contract and must stay byte-for-byte
+    /// identical (reviewers hash it).
+    /// </summary>
+    private static string BuildDraftPrompt(string description, string context)
+    {
+        return $@"Draft natural-language questions with expected answers for each intent below.
+
+## Dataset Description
+{description}
+
+## Intents with Available Facts
+{context}
+
+## Instructions
+For each intent, produce:
+- ""prompt"": A natural-language question as a knowledge worker would type into Copilot
+- ""category"": Same category as the intent
+- ""difficulty"": Same difficulty as the intent
+- ""expected_answer"": The correct answer derived ONLY from the facts shown. Write a concise, natural response.
+- ""supporting_facts"": Array of ""field=value"" strings that ground the answer
+- ""supporting_fact_ids"": Array of fact IDs (e.g., ""f-3"", ""f-7"") from the ""Available facts"" block that the answer is grounded in. Include only facts you actually used.
+- ""source_location"": The row reference where the primary answer data is found (use the assigned primary row when one was specified)
+
+Rules:
+- The expected_answer MUST be derivable from the facts provided — do not invent data
+- Write questions in natural language (not SQL-like or technical)
+- Expected answers should be concise but complete
+- supporting_fact_ids must reference IDs that appeared in the Available facts block for this intent
+- When an ""Assigned primary row"" is specified, source_location MUST equal that row
+
+Respond with JSON: {{""questions"": [...]}}";
     }
 
     private static string TrimSurroundingQuotes(string s)

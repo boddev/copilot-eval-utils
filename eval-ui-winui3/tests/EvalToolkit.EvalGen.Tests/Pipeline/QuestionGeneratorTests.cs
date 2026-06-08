@@ -251,4 +251,117 @@ public class QuestionGeneratorTests
         Assert.Equal(QuestionCategory.SingleRecordLookup, intents[0].Category);
         Assert.Equal(Difficulty.Medium, intents[0].Difficulty);
     }
+
+    [Fact]
+    public async Task DraftQuestionsAsync_SplitsIntoBatches_WhenClientHasPromptLimit()
+    {
+        var records = MakeRecords();
+        var profile = Profiler.ProfileDataset(records, "people.csv", InputFormat.Csv);
+        var facts = FactExtractor.ExtractFacts(records, profile);
+
+        var intents = new List<QuestionIntent>();
+        for (int i = 0; i < 6; i++)
+        {
+            intents.Add(new QuestionIntent
+            {
+                Intent = $"intent number {i}",
+                Category = QuestionCategory.SingleRecordLookup,
+                Difficulty = Difficulty.Easy,
+                TargetFields = new[] { "name" },
+                TargetRowReferences = new[] { "people.csv:row 1" },
+            });
+        }
+
+        // Tiny budget forces multiple batches; the client echoes one question
+        // per "Intent " block in the prompt it actually received.
+        var client = new BatchCountingClient(maxPromptChars: 600);
+
+        var drafted = await QuestionGenerator.DraftQuestionsAsync(intents, facts, records, profile, "people", client);
+
+        Assert.True(client.CallCount > 1, $"expected multiple batches, got {client.CallCount}");
+        Assert.Equal(6, drafted.Count);
+    }
+
+    [Fact]
+    public async Task DraftQuestionsAsync_SingleCall_WhenNoPromptLimit()
+    {
+        var records = MakeRecords();
+        var profile = Profiler.ProfileDataset(records, "people.csv", InputFormat.Csv);
+        var facts = FactExtractor.ExtractFacts(records, profile);
+
+        var intents = new List<QuestionIntent>();
+        for (int i = 0; i < 6; i++)
+        {
+            intents.Add(new QuestionIntent
+            {
+                Intent = $"intent number {i}",
+                Category = QuestionCategory.SingleRecordLookup,
+                Difficulty = Difficulty.Easy,
+                TargetFields = new[] { "name" },
+                TargetRowReferences = new[] { "people.csv:row 1" },
+            });
+        }
+
+        // No IPromptSizeLimited: original single-call behavior is preserved.
+        var client = new CountingDraftClient();
+
+        var drafted = await QuestionGenerator.DraftQuestionsAsync(intents, facts, records, profile, "people", client);
+
+        Assert.Equal(1, client.CallCount);
+        Assert.Equal(6, drafted.Count);
+    }
+
+    /// <summary>
+    /// Test client that returns one drafted question per "Intent " block found
+    /// in the prompt and counts how many times it was called. Does not advertise
+    /// a prompt-size limit, so the pipeline keeps single-call behavior.
+    /// </summary>
+    private class CountingDraftClient : ILlmClient
+    {
+        public int CallCount { get; private set; }
+
+        public Task AuthenticateAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<T> GenerateStructuredAsync<T>(string prompt, string schemaDescription, CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            int count = CountOccurrences(prompt, "Intent ");
+            var dtos = new List<DraftedQuestionDto>();
+            for (int i = 0; i < count; i++)
+            {
+                dtos.Add(new DraftedQuestionDto
+                {
+                    Prompt = $"q{i}",
+                    Category = "single_record_lookup",
+                    Difficulty = "easy",
+                    ExpectedAnswer = "a",
+                });
+            }
+            return Task.FromResult((T)(object)new QuestionsResponse { Questions = dtos });
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        private static int CountOccurrences(string haystack, string needle)
+        {
+            int count = 0, idx = 0;
+            while ((idx = haystack.IndexOf(needle, idx, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                idx += needle.Length;
+            }
+            return count;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="CountingDraftClient"/> that also advertises a prompt-size
+    /// limit, triggering pipeline batching when the prompt would exceed it.
+    /// </summary>
+    private sealed class BatchCountingClient : CountingDraftClient, IPromptSizeLimited
+    {
+        public BatchCountingClient(int maxPromptChars) => MaxPromptChars = maxPromptChars;
+
+        public int MaxPromptChars { get; }
+    }
 }

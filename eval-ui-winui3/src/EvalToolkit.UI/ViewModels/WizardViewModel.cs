@@ -61,7 +61,7 @@ public partial class WizardViewModel : ObservableObject, IDisposable
         _workspaceRoot = workspaceRoot;
 
         DatasetPicker = new DatasetPickerViewModel(dialog);
-        Describe = new DescribeViewModel(new GitHubModelCatalogService(), dispatcher);
+        Describe = new DescribeViewModel();
         Progress = new ProgressViewModel();
         Editor = new EvalEditorViewModel(dispatcher);
         Score = new ScoreViewModel(dispatcher);

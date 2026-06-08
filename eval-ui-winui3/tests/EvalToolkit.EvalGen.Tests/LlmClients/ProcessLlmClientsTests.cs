@@ -22,15 +22,30 @@ public sealed class GitHubCopilotCliLlmClientTests
         Reply reply = await client.GenerateStructuredAsync<Reply>("What is the answer?", "Return {status}.");
 
         Assert.NotNull(captured);
-        Assert.Equal("gh", captured!.Command);
-        Assert.False(captured.UseShell);
-        Assert.Equal("copilot", captured.Arguments[0]);
-        Assert.Equal("--", captured.Arguments[1]);
-        Assert.Equal("-p", captured.Arguments[2]);
-        Assert.Contains("What is the answer?", captured.Arguments[3]);
-        Assert.Contains("--silent", captured.Arguments);
+        Assert.False(captured!.UseShell);
+        Assert.Contains("copilot", captured.Command, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("-p", captured.Arguments[0]);
+        Assert.Contains("What is the answer?", captured.Arguments[1]);
+        Assert.Contains("--output-format", captured.Arguments);
+        Assert.Contains("json", captured.Arguments);
         Assert.Contains("--no-color", captured.Arguments);
+        Assert.DoesNotContain("gh", captured.Arguments);
         Assert.Equal("ok", reply.Status);
+    }
+
+    [Fact]
+    public async Task ExtractsAnswerFromJsonlAssistantMessage()
+    {
+        var runner = new RecordingRunner(_ =>
+            "{\"type\":\"session.info\",\"data\":{\"message\":\"banner\"}}\n" +
+            "{\"type\":\"assistant.reasoning\",\"data\":{\"reasoningId\":\"x\"}}\n" +
+            "{\"type\":\"assistant.message\",\"data\":{\"messageId\":\"m\",\"content\":\"{\\\"status\\\":\\\"done\\\"}\"}}\n" +
+            "{\"type\":\"result\",\"data\":{\"exitCode\":0}}");
+
+        var client = new GitHubCopilotCliLlmClient(new LlmClientOptions(), runner);
+        Reply reply = await client.GenerateStructuredAsync<Reply>("q", "s");
+
+        Assert.Equal("done", reply.Status);
     }
 
     [Fact]
