@@ -1,8 +1,12 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using EvalToolkit.Core;
 using EvalToolkit.UI.Models;
+using EvalToolkit.UI.Services;
+using Microsoft.UI.Dispatching;
 
 namespace EvalToolkit.UI.ViewModels;
 
@@ -70,8 +74,39 @@ public partial class DescribeViewModel : ObservableObject
     [ObservableProperty]
     public partial string ConnectorSchemaPath { get; set; }
 
-    public DescribeViewModel()
+    /// <summary>
+    /// True while <see cref="AvailableModels"/> is being fetched from the
+    /// GitHub model catalog. Drives the dropdown placeholder text.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool ModelsLoading { get; set; }
+
+    private readonly IGitHubModelCatalogService? _modelCatalog;
+    private readonly DispatcherQueue? _dispatcher;
+
+    // Guards re-entrancy / redundant fetches. A fetch is only considered
+    // "done" once it returns at least one model, so a transient failure
+    // (offline, rate-limited) is retried the next time the GitHub provider
+    // is selected.
+    private bool _modelsLoaded;
+    private bool _modelsLoadInProgress;
+
+    /// <param name="modelCatalog">
+    /// Source of the GitHub Copilot model list. When null (unit tests /
+    /// design-time) the dropdown stays empty and free-text only.
+    /// </param>
+    /// <param name="dispatcher">
+    /// UI dispatcher used to marshal <see cref="AvailableModels"/> updates
+    /// back onto the UI thread after the async fetch completes. Only the
+    /// test / design-time path may pass null.
+    /// </param>
+    public DescribeViewModel(
+        IGitHubModelCatalogService? modelCatalog = null,
+        DispatcherQueue? dispatcher = null)
     {
+        _modelCatalog = modelCatalog;
+        _dispatcher = dispatcher;
+
         Description = string.Empty;
         Count = DefaultCount;
         Extensions = DefaultExtensions;
@@ -80,14 +115,21 @@ public partial class DescribeViewModel : ObservableObject
         Model = AutoModel;
         M365TenantId = string.Empty;
         ConnectorSchemaPath = string.Empty;
-        AvailableModels = new ObservableCollection<string>(GitHubCopilotModelCatalog.KnownModels);
+        // Populated on demand from the GitHub model catalog the first time
+        // the GitHub Copilot provider is selected (see EnsureModelsLoadedAsync).
+        AvailableModels = new ObservableCollection<string>();
     }
 
     /// <summary>
     /// Candidate model identifiers shown in the editable model ComboBox
-    /// when <see cref="LLMProvider.GitHubCopilot"/> is selected.
+    /// when <see cref="LLMProvider.GitHubCopilot"/> is selected. Fetched
+    /// live from the GitHub model catalog.
     /// </summary>
     public ObservableCollection<string> AvailableModels { get; }
+
+    /// <summary>Placeholder shown in the model ComboBox while it is empty.</summary>
+    public string ModelPlaceholder =>
+        ModelsLoading ? "Loading models..." : "Select or type a model";
 
     /// <summary>GitHub Copilot CLI — model is picked from <see cref="AvailableModels"/>.</summary>
     public bool IsModelDropdown => Provider == LLMProvider.GitHubCopilot;
@@ -159,10 +201,92 @@ public partial class DescribeViewModel : ObservableObject
         OnPropertyChanged(nameof(IsModelTextBox));
         OnPropertyChanged(nameof(IsModelAuto));
         OnPropertyChanged(nameof(EffectiveModel));
+
+        if (IsModelDropdown)
+        {
+            // Fire-and-forget; the method is fully exception-safe and marshals
+            // its own UI updates. The discard documents the intentional
+            // non-await (no SynchronizationContext capture needed here).
+            _ = EnsureModelsLoadedAsync();
+        }
     }
 
     partial void OnModelChanged(string value)
     {
         OnPropertyChanged(nameof(EffectiveModel));
+    }
+
+    partial void OnModelsLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ModelPlaceholder));
+    }
+
+    /// <summary>
+    /// Lazily fetches the GitHub model catalog into <see cref="AvailableModels"/>
+    /// the first time the GitHub Copilot provider is selected. Safe to call
+    /// repeatedly: it no-ops while a fetch is in flight or after a successful
+    /// load, and retries after a failed (empty) load. Never throws.
+    /// </summary>
+    private async Task EnsureModelsLoadedAsync()
+    {
+        if (_modelCatalog is null || _modelsLoaded || _modelsLoadInProgress)
+        {
+            return;
+        }
+
+        _modelsLoadInProgress = true;
+        ModelsLoading = true;
+
+        try
+        {
+            IReadOnlyList<string> models;
+            try
+            {
+                models = await _modelCatalog.GetModelsAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                models = Array.Empty<string>();
+            }
+
+            void Apply()
+            {
+                try
+                {
+                    AvailableModels.Clear();
+                    foreach (var model in models)
+                    {
+                        AvailableModels.Add(model);
+                    }
+
+                    // Only latch as loaded when we actually got results, so a
+                    // transient failure is retried on the next provider switch.
+                    _modelsLoaded = models.Count > 0;
+                }
+                finally
+                {
+                    ModelsLoading = false;
+                    _modelsLoadInProgress = false;
+                }
+            }
+
+            if (_dispatcher is null)
+            {
+                // Test / design-time path only — no UI thread to marshal to.
+                Apply();
+            }
+            else if (!_dispatcher.TryEnqueue(Apply))
+            {
+                // Could not marshal (queue shutting down); reset so a later
+                // attempt can retry rather than getting stuck "loading".
+                ModelsLoading = false;
+                _modelsLoadInProgress = false;
+            }
+        }
+        catch
+        {
+            ModelsLoading = false;
+            _modelsLoadInProgress = false;
+        }
     }
 }

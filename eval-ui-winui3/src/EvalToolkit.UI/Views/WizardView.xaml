@@ -201,6 +201,7 @@
                                 <ComboBox Grid.Row="0" Grid.Column="1"
                                           IsEditable="True"
                                           HorizontalAlignment="Stretch"
+                                          PlaceholderText="{x:Bind ViewModel.Describe.ModelPlaceholder, Mode=OneWay}"
                                           ItemsSource="{x:Bind ViewModel.Describe.AvailableModels, Mode=OneWay}"
                                           Text="{x:Bind ViewModel.Describe.Model, Mode=TwoWay}"
                                           Visibility="{x:Bind ViewModel.Describe.IsModelDropdown, Mode=OneWay}">
