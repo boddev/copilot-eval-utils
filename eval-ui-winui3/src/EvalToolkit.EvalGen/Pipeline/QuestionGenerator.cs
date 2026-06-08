@@ -30,8 +30,116 @@ public static class QuestionGenerator
         CancellationToken cancellationToken = default)
     {
         var sampleRecordCount = Math.Min(100, Math.Max(60, count * 2));
-        var factSummary = FactExtractor.SummarizeFacts(facts, sampleRecordCount);
+        var schema = BuildSchema(profile);
+        var assigned = assignedRows ?? Array.Empty<string>();
 
+        // Assemble the would-be single-call prompt. This is the exact prompt
+        // every provider uses when it fits, preserving byte-for-byte parity
+        // with the original behavior.
+        var singleFactSummary = FactExtractor.SummarizeFacts(facts, sampleRecordCount);
+        var singlePrompt = BuildIntentsPrompt(
+            description, profile, schema, count,
+            singleFactSummary, BuildCategoryTargets(count),
+            BuildAssignmentBlock(assigned, count));
+
+        // The GitHub Copilot CLI provider transmits the prompt on a process
+        // command line capped at ~32K chars. The "Sample Records" block embeds
+        // 60-100 records with all their facts inline, so for large/wide datasets
+        // this single intents prompt overflows. When the client advertises a
+        // prompt-size limit (IPromptSizeLimited), the prompt exceeds it, and rows
+        // are pre-assigned, split the intent slots into row-aligned batches whose
+        // prompt fits: each batch only embeds the facts for its own assigned rows.
+        // Every other provider and every small job keeps the single call, so
+        // output is unchanged for them.
+        //
+        // Trade-off: scoping each batch to its assigned rows means the LLM only
+        // sees those rows, so "comparison"/"filtered_find" intents can only pick a
+        // second row from other assigned rows in the same batch. Batches hold many
+        // rows in practice, so this degradation is mild and only affects oversized
+        // Copilot CLI jobs.
+        int? budget = (client as IPromptSizeLimited)?.MaxPromptChars;
+        if (budget is null || assigned.Count == 0 || singlePrompt.Length <= budget.Value)
+        {
+            var dtoList = await CallIntentsAsync(client, singlePrompt, cancellationToken).ConfigureAwait(false);
+            return BuildIntentsFromDtos(dtoList, assigned, clampCount: null);
+        }
+
+        var grouped = FactExtractor.GroupFactsByRecord(facts);
+        var allIntents = new List<QuestionIntent>(count);
+        int idx = 0;
+        while (idx < assigned.Count)
+        {
+            // Greedily grow the batch one slot at a time, rebuilding the actual
+            // prompt so the fit check accounts for the exact template, schema,
+            // category-target digits and slot numbering. Always keep at least one
+            // slot; a single slot whose prompt alone exceeds the budget is emitted
+            // on its own and surfaces a clear error from the client preflight.
+            var batchRows = new List<string> { assigned[idx] };
+            idx++;
+            while (idx < assigned.Count)
+            {
+                var candidate = new List<string>(batchRows) { assigned[idx] };
+                if (BuildBatchIntentsPrompt(description, profile, schema, grouped, candidate).Length > budget.Value)
+                {
+                    break;
+                }
+                batchRows = candidate;
+                idx++;
+            }
+
+            var prompt = BuildBatchIntentsPrompt(description, profile, schema, grouped, batchRows);
+            var dtoList = await CallIntentsAsync(client, prompt, cancellationToken).ConfigureAwait(false);
+
+            // Each batch is self-contained and mapped to its assigned rows BY
+            // INDEX, so clamp an over-return to the batch's slot count to stop it
+            // borrowing the next batch's rows.
+            allIntents.AddRange(BuildIntentsFromDtos(dtoList, batchRows, clampCount: batchRows.Count));
+        }
+
+        return allIntents;
+    }
+
+    /// <summary>Send one intents prompt to the LLM and return the raw DTOs.</summary>
+    private static async Task<List<QuestionIntentDto>> CallIntentsAsync(
+        ILlmClient client, string prompt, CancellationToken cancellationToken)
+    {
+        var result = await client.GenerateStructuredAsync<IntentsResponse>(
+            prompt,
+            "Respond with a JSON object containing an \"intents\" array of question intent objects.",
+            cancellationToken).ConfigureAwait(false);
+        var intents = result?.Intents;
+        return intents as List<QuestionIntentDto> ?? intents?.ToList() ?? new List<QuestionIntentDto>();
+    }
+
+    /// <summary>
+    /// Build an intents prompt for a single row-aligned batch: scope the "Sample
+    /// Records" block to only this batch's assigned rows (all of them — the
+    /// summary cap is the row count, so no assigned row is ever omitted) and scale
+    /// the slot count and category targets to the batch.
+    /// </summary>
+    private static string BuildBatchIntentsPrompt(
+        string description,
+        DatasetProfile profile,
+        string schema,
+        IReadOnlyDictionary<string, IReadOnlyList<Fact>> grouped,
+        List<string> rows)
+    {
+        var batchFacts = new List<Fact>();
+        foreach (var r in rows)
+        {
+            if (grouped.TryGetValue(r, out var rowFacts)) batchFacts.AddRange(rowFacts);
+        }
+
+        var factSummary = FactExtractor.SummarizeFacts(batchFacts, rows.Count);
+        return BuildIntentsPrompt(
+            description, profile, schema, rows.Count,
+            factSummary, BuildCategoryTargets(rows.Count),
+            BuildAssignmentBlock(rows, rows.Count));
+    }
+
+    /// <summary>Render the dataset schema block (one column per line).</summary>
+    private static string BuildSchema(DatasetProfile profile)
+    {
         var schemaSb = new StringBuilder();
         for (int i = 0; i < profile.Columns.Count; i++)
         {
@@ -47,7 +155,12 @@ public static class QuestionGenerator
             }
             schemaSb.Append(')');
         }
+        return schemaSb.ToString();
+    }
 
+    /// <summary>Render the "Question Category Targets" line for a slot count.</summary>
+    private static string BuildCategoryTargets(int count)
+    {
         var categoryTargetsSb = new StringBuilder();
         bool first = true;
         foreach (var (cat, weight) in QuestionCategories.DefaultWeights)
@@ -57,17 +170,24 @@ public static class QuestionGenerator
             categoryTargetsSb.Append(cat.ToWireString()).Append(": ")
                 .Append(Math.Max(1, (int)Math.Round(count * weight, MidpointRounding.AwayFromZero)));
         }
+        return categoryTargetsSb.ToString();
+    }
 
-        string assignmentBlock = string.Empty;
-        if (assignedRows is { Count: > 0 })
+    /// <summary>
+    /// Render the optional "Pre-assigned Primary Rows" block. Returns an empty
+    /// string when no rows are assigned (matching the original behavior).
+    /// </summary>
+    private static string BuildAssignmentBlock(IReadOnlyList<string> assignedRows, int count)
+    {
+        if (assignedRows is not { Count: > 0 }) return string.Empty;
+
+        var slotsSb = new StringBuilder();
+        for (int i = 0; i < assignedRows.Count && i < count; i++)
         {
-            var slotsSb = new StringBuilder();
-            for (int i = 0; i < assignedRows.Count && i < count; i++)
-            {
-                if (i > 0) slotsSb.Append('\n');
-                slotsSb.Append("  ").Append(i + 1).Append(". ").Append(assignedRows[i]);
-            }
-            assignmentBlock = $@"
+            if (i > 0) slotsSb.Append('\n');
+            slotsSb.Append("  ").Append(i + 1).Append(". ").Append(assignedRows[i]);
+        }
+        return $@"
 
 ## Pre-assigned Primary Rows (REQUIRED)
 Generate exactly {assignedRows.Count} intents. Each intent slot has a pre-assigned primary row:
@@ -76,21 +196,35 @@ Generate exactly {assignedRows.Count} intents. Each intent slot has a pre-assign
 For intent N, target_row_references MUST start with the assigned row for slot N.
 You MAY add additional rows to target_row_references when the category is ""comparison"" or ""filtered_find"" and a second row genuinely improves the question.
 DO NOT use the same primary row for two different intents.";
-        }
+    }
 
-        var prompt = $@"Analyze this dataset and generate exactly {count} question intents for evaluating a Microsoft 365 Copilot connector.
+    /// <summary>
+    /// Build the intents-stage prompt around the supplied pieces. The literal
+    /// text is part of the TS port contract and must stay byte-for-byte identical
+    /// (reviewers hash it); only the interpolated values change.
+    /// </summary>
+    private static string BuildIntentsPrompt(
+        string description,
+        DatasetProfile profile,
+        string schema,
+        int count,
+        string factSummary,
+        string categoryTargets,
+        string assignmentBlock)
+    {
+        return $@"Analyze this dataset and generate exactly {count} question intents for evaluating a Microsoft 365 Copilot connector.
 
 ## Dataset Description
 {description}
 
 ## Dataset Schema ({profile.RowCount} rows)
-  {schemaSb}
+  {schema}
 
 ## Sample Records (with [f-N] fact IDs)
 {factSummary}
 
 ## Question Category Targets
-{categoryTargetsSb}{assignmentBlock}
+{categoryTargets}{assignmentBlock}
 
 ## Instructions
 Generate question intents that a knowledge worker would naturally ask Copilot about this data.
@@ -110,13 +244,23 @@ Rules:
 - Include a few edge cases (asking about values that don't exist, ambiguous queries)
 
 Respond with JSON: {{""intents"": [...]}}";
+    }
 
-        var result = await client.GenerateStructuredAsync<IntentsResponse>(
-            prompt,
-            "Respond with a JSON object containing an \"intents\" array of question intent objects.",
-            cancellationToken).ConfigureAwait(false);
-
-        var dtoList = result?.Intents ?? new List<QuestionIntentDto>();
+    /// <summary>
+    /// Convert raw intent DTOs into immutable <see cref="QuestionIntent"/>
+    /// records: optionally clamp to <paramref name="clampCount"/> (chunked mode),
+    /// carry the pre-assigned row onto each intent by index, and fall back to safe
+    /// defaults for any malformed category/difficulty.
+    /// </summary>
+    private static List<QuestionIntent> BuildIntentsFromDtos(
+        List<QuestionIntentDto> dtoList,
+        IReadOnlyList<string> assignedRows,
+        int? clampCount)
+    {
+        if (clampCount is int cc && dtoList.Count > cc)
+        {
+            dtoList = dtoList.Take(cc).ToList();
+        }
 
         // Carry the pre-assigned row through onto each intent.
         if (assignedRows is { Count: > 0 })

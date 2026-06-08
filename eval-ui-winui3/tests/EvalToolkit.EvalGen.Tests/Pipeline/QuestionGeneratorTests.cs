@@ -364,4 +364,175 @@ public class QuestionGeneratorTests
 
         public int MaxPromptChars { get; }
     }
+
+    private static IReadOnlyDictionary<string, object?>[] MakeWideRecords(int rowCount)
+    {
+        var bio = new string('x', 400);
+        var rows = new IReadOnlyDictionary<string, object?>[rowCount];
+        for (int i = 0; i < rowCount; i++)
+        {
+            rows[i] = Row(("id", (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)), ("name", $"Person{i + 1}"), ("bio", $"{bio}-{i}"));
+        }
+        return rows;
+    }
+
+    private static List<string> AssignDistinctRows(IReadOnlyList<Fact> facts, int count)
+    {
+        var distinct = facts.Select(f => f.RowReference).Distinct().ToList();
+        var assigned = new List<string>(count);
+        for (int i = 0; i < count; i++)
+        {
+            assigned.Add(distinct[i % distinct.Count]);
+        }
+        return assigned;
+    }
+
+    [Fact]
+    public async Task GenerateIntentsAsync_SplitsIntoBatches_WhenPromptExceedsLimit()
+    {
+        var records = MakeWideRecords(8);
+        var profile = Profiler.ProfileDataset(records, "people.csv", InputFormat.Csv);
+        var facts = FactExtractor.ExtractFacts(records, profile);
+        var assigned = AssignDistinctRows(facts, 8);
+
+        // Wide rows + small budget force the intents prompt over the limit, so
+        // the pipeline must split into multiple row-aligned batches.
+        var client = new LimitedIntentRecordingClient(maxPromptChars: 3000);
+
+        var intents = await QuestionGenerator.GenerateIntentsAsync(profile, facts, "people", 8, client, assigned);
+
+        Assert.True(client.CallCount > 1, $"expected multiple batches, got {client.CallCount}");
+        Assert.Equal(8, intents.Count);
+
+        // Critique invariant: every assigned row in a batch must appear in that
+        // batch's Sample Records block, and no multi-slot batch may exceed budget.
+        foreach (var prompt in client.Prompts)
+        {
+            var assignedInPrompt = ExtractAssignedRows(prompt);
+            var sampleRecords = ExtractSampleRecordsSection(prompt);
+            foreach (var row in assignedInPrompt)
+            {
+                Assert.Contains("[" + row + "]", sampleRecords);
+            }
+
+            if (assignedInPrompt.Count > 1)
+            {
+                Assert.True(prompt.Length <= 3000, $"multi-slot batch prompt was {prompt.Length} chars");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task GenerateIntentsAsync_SingleCall_WhenNoPromptLimit()
+    {
+        var records = MakeWideRecords(8);
+        var profile = Profiler.ProfileDataset(records, "people.csv", InputFormat.Csv);
+        var facts = FactExtractor.ExtractFacts(records, profile);
+        var assigned = AssignDistinctRows(facts, 8);
+
+        // No IPromptSizeLimited: the whole job stays a single intents call.
+        var client = new IntentRecordingClient();
+
+        var intents = await QuestionGenerator.GenerateIntentsAsync(profile, facts, "people", 8, client, assigned);
+
+        Assert.Equal(1, client.CallCount);
+        Assert.Equal(8, intents.Count);
+    }
+
+    [Fact]
+    public async Task GenerateIntentsAsync_ClampsOverReturnPerBatch()
+    {
+        var records = MakeWideRecords(8);
+        var profile = Profiler.ProfileDataset(records, "people.csv", InputFormat.Csv);
+        var facts = FactExtractor.ExtractFacts(records, profile);
+        var assigned = AssignDistinctRows(facts, 8);
+
+        // Return twice as many intents per batch as requested; the pipeline must
+        // clamp each batch to its slot count so totals stay correct.
+        var client = new LimitedIntentRecordingClient(maxPromptChars: 3000, overReturnFactor: 2);
+
+        var intents = await QuestionGenerator.GenerateIntentsAsync(profile, facts, "people", 8, client, assigned);
+
+        Assert.True(client.CallCount > 1);
+        Assert.Equal(8, intents.Count);
+    }
+
+    private static List<string> ExtractAssignedRows(string prompt)
+    {
+        var rows = new List<string>();
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(prompt, @"(?m)^  \d+\. (.+)$"))
+        {
+            rows.Add(m.Groups[1].Value.Trim());
+        }
+        return rows;
+    }
+
+    private static string ExtractSampleRecordsSection(string prompt)
+    {
+        const string start = "## Sample Records";
+        const string end = "## Question Category Targets";
+        int s = prompt.IndexOf(start, StringComparison.Ordinal);
+        int e = prompt.IndexOf(end, StringComparison.Ordinal);
+        if (s < 0 || e < 0 || e <= s) return string.Empty;
+        return prompt.Substring(s, e - s);
+    }
+
+    /// <summary>
+    /// Records every intents prompt it receives and returns one intent per slot
+    /// requested by that prompt ("generate exactly N question intents"). Does not
+    /// advertise a prompt-size limit, so the pipeline keeps single-call behavior.
+    /// </summary>
+    private class IntentRecordingClient : ILlmClient
+    {
+        private readonly int _overReturnFactor;
+
+        public IntentRecordingClient(int overReturnFactor = 1) => _overReturnFactor = overReturnFactor;
+
+        public List<string> Prompts { get; } = new();
+
+        public int CallCount => Prompts.Count;
+
+        public Task AuthenticateAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<T> GenerateStructuredAsync<T>(string prompt, string schemaDescription, CancellationToken cancellationToken = default)
+        {
+            Prompts.Add(prompt);
+            int requested = ExtractRequestedCount(prompt) * _overReturnFactor;
+            var dtos = new List<QuestionIntentDto>();
+            for (int i = 0; i < requested; i++)
+            {
+                dtos.Add(new QuestionIntentDto
+                {
+                    Intent = $"i{i}",
+                    Category = "single_record_lookup",
+                    Difficulty = "easy",
+                    TargetFields = new List<string>(),
+                    TargetRowReferences = new List<string>(),
+                });
+            }
+            return Task.FromResult((T)(object)new IntentsResponse { Intents = dtos });
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        private static int ExtractRequestedCount(string prompt)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                prompt, @"generate exactly (\d+) question intents");
+            return m.Success ? int.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 0;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="IntentRecordingClient"/> that advertises a prompt-size limit,
+    /// triggering intents-stage batching when the prompt would exceed it.
+    /// </summary>
+    private sealed class LimitedIntentRecordingClient : IntentRecordingClient, IPromptSizeLimited
+    {
+        public LimitedIntentRecordingClient(int maxPromptChars, int overReturnFactor = 1)
+            : base(overReturnFactor) => MaxPromptChars = maxPromptChars;
+
+        public int MaxPromptChars { get; }
+    }
 }
