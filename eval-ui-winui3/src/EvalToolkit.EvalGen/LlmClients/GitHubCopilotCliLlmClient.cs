@@ -4,12 +4,20 @@ namespace EvalToolkit.EvalGen.LlmClients;
 
 /// <summary>
 /// GitHub Copilot CLI provider. Invokes the standalone <c>copilot</c> CLI in
-/// non-interactive mode:
-/// <c>copilot -p &lt;prompt&gt; --output-format json --no-color [--model X]</c>.
+/// non-interactive mode and feeds the prompt on <b>stdin</b>:
+/// <c>copilot --output-format json --no-color [--model X]</c> with the prompt
+/// piped to standard input.
 ///
 /// <para>Design notes (see <see cref="CopilotCliLocator"/> and
 /// <see cref="CopilotCliOutput"/> for the why):</para>
 /// <list type="bullet">
+///   <item>The prompt is sent on <b>stdin</b>, not as a <c>-p &lt;prompt&gt;</c>
+///         command-line argument. Copilot reads stdin as the prompt when stdin
+///         is a non-TTY pipe and no <c>-p</c> is given, which sidesteps the
+///         Windows ~32K command-line length limit (CreateProcess / Win32 206).
+///         A <c>-p</c> argument overflows that limit for large or wide
+///         datasets; stdin has no such cap, so generation works for prompts of
+///         any size and matches the behavior of the Node CLI on Unix.</item>
 ///   <item>Launches the real <c>copilot</c> executable directly
 ///         (<c>UseShellExecute=false</c>), not the legacy <c>gh copilot</c>
 ///         extension and not the non-launchable npm shim.</item>
@@ -19,18 +27,10 @@ namespace EvalToolkit.EvalGen.LlmClients;
 ///   <item>Does NOT pass <c>--allow-all-tools</c>: these are pure
 ///         JSON-generation prompts that need no tools, and withholding it
 ///         avoids giving prompt-injected dataset content tool access.</item>
-///   <item>The prompt travels on the command line, which the OS limits to
-///         ~32K chars. <see cref="MaxPromptChars"/> lets the pipeline batch
-///         large stages; a hard preflight guard turns any remaining overflow
-///         into a clear, actionable error instead of a Win32 crash.</item>
 /// </list>
 /// </summary>
-public sealed class GitHubCopilotCliLlmClient : ILlmClient, IPromptSizeLimited
+public sealed class GitHubCopilotCliLlmClient : ILlmClient
 {
-    // Windows caps a process command line at 32767 chars. Reserve headroom for
-    // the executable path, the other flags, the model name and quoting.
-    private const int CommandLineHardLimit = 31000;
-
     private readonly IProcessRunner _runner;
     private readonly string? _model;
     private readonly string _executable;
@@ -42,14 +42,6 @@ public sealed class GitHubCopilotCliLlmClient : ILlmClient, IPromptSizeLimited
         _executable = CopilotCliLocator.Resolve();
     }
 
-    /// <summary>
-    /// Budget for the <c>prompt</c> argument before
-    /// <see cref="StructuredPromptBuilder"/> wraps it. Kept below
-    /// <see cref="CommandLineHardLimit"/> to leave room for the wrapper, schema
-    /// hint, flags and executable path.
-    /// </summary>
-    public int MaxPromptChars => 28000;
-
     public Task AuthenticateAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     public async Task<T> GenerateStructuredAsync<T>(string prompt, string schemaDescription, CancellationToken cancellationToken = default)
@@ -58,18 +50,9 @@ public sealed class GitHubCopilotCliLlmClient : ILlmClient, IPromptSizeLimited
         ArgumentNullException.ThrowIfNull(schemaDescription);
 
         string structuredPrompt = StructuredPromptBuilder.Build(prompt, schemaDescription);
-        if (structuredPrompt.Length > CommandLineHardLimit)
-        {
-            throw new InvalidOperationException(
-                $"The generated prompt is {structuredPrompt.Length:N0} characters, which exceeds the GitHub Copilot CLI " +
-                $"command-line limit (~{CommandLineHardLimit:N0}). Reduce the number of questions or the dataset size, " +
-                "or use the Azure OpenAI provider for very large datasets.");
-        }
 
         var args = new List<string>
         {
-            "-p",
-            structuredPrompt,
             "--output-format",
             "json",
             "--no-color",
@@ -80,8 +63,10 @@ public sealed class GitHubCopilotCliLlmClient : ILlmClient, IPromptSizeLimited
             args.Add(_model);
         }
 
+        // The prompt travels on stdin (not a -p argument), so there is no
+        // command-line length limit to overflow.
         string output = await _runner.RunAsync(
-            new ProcessInvocation(_executable, args, StandardInput: null, UseShell: false),
+            new ProcessInvocation(_executable, args, StandardInput: structuredPrompt, UseShell: false),
             cancellationToken).ConfigureAwait(false);
 
         string assistantText = CopilotCliOutput.ExtractAssistantText(output);

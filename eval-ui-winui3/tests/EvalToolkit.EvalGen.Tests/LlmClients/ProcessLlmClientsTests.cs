@@ -9,7 +9,7 @@ public sealed class GitHubCopilotCliLlmClientTests
     public sealed record Reply(string Status);
 
     [Fact]
-    public async Task SendsExpectedArgsAndParsesStdout()
+    public async Task SendsPromptOnStdinAndParsesStdout()
     {
         ProcessInvocation? captured = null;
         var runner = new RecordingRunner(invocation =>
@@ -24,8 +24,10 @@ public sealed class GitHubCopilotCliLlmClientTests
         Assert.NotNull(captured);
         Assert.False(captured!.UseShell);
         Assert.Contains("copilot", captured.Command, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal("-p", captured.Arguments[0]);
-        Assert.Contains("What is the answer?", captured.Arguments[1]);
+        // The prompt travels on stdin, not as a -p command-line argument.
+        Assert.NotNull(captured.StandardInput);
+        Assert.Contains("What is the answer?", captured.StandardInput!);
+        Assert.DoesNotContain("-p", captured.Arguments);
         Assert.Contains("--output-format", captured.Arguments);
         Assert.Contains("json", captured.Arguments);
         Assert.Contains("--no-color", captured.Arguments);
