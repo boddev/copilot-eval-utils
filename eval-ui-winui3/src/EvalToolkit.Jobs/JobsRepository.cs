@@ -58,6 +58,78 @@ public sealed class JobsRepository : IJobsRepository
         return summaries;
     }
 
+    public void DeleteJob(string workspaceRoot, string jobId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+
+        // jobId is a folder name, never a path. Reject anything that could
+        // escape the jobs directory before it ever reaches the filesystem.
+        if (jobId is "." or ".."
+            || jobId.IndexOfAny(PathSeparators) >= 0
+            || Path.IsPathRooted(jobId))
+        {
+            throw new ArgumentException($"Invalid job id '{jobId}'.", nameof(jobId));
+        }
+
+        string jobsRoot = Path.GetFullPath(Path.Combine(workspaceRoot, JobsSubdirectory));
+        string target = Path.GetFullPath(Path.Combine(jobsRoot, jobId));
+
+        // Defense in depth: the resolved target must be a direct child of
+        // the jobs root. Parent-equality is stricter than a prefix check
+        // and rejects sibling folders sharing the root's name prefix.
+        string? parent = Path.GetDirectoryName(target);
+        if (parent is null || !PathsEqual(parent, jobsRoot))
+        {
+            throw new ArgumentException(
+                $"Job id '{jobId}' resolves outside the jobs directory.", nameof(jobId));
+        }
+
+        if (!Directory.Exists(target))
+        {
+            return; // already gone — treat as success.
+        }
+
+        Directory.Delete(target, recursive: true);
+    }
+
+    public void DeleteAllJobs(string workspaceRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
+
+        string jobsRoot = Path.Combine(workspaceRoot, JobsSubdirectory);
+        if (!Directory.Exists(jobsRoot))
+        {
+            return;
+        }
+
+        string[] dirs;
+        try
+        {
+            dirs = Directory.GetDirectories(jobsRoot);
+        }
+        catch (IOException) { return; }
+        catch (UnauthorizedAccessException) { return; }
+
+        foreach (var dir in dirs)
+        {
+            // Best-effort: one locked folder must not abort the rest. A
+            // subsequent refresh shows whatever could not be removed.
+            try { Directory.Delete(dir, recursive: true); }
+            catch (IOException) { /* skip */ }
+            catch (UnauthorizedAccessException) { /* skip */ }
+        }
+    }
+
+    private static readonly char[] PathSeparators =
+        { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+
+    private static bool PathsEqual(string a, string b) =>
+        string.Equals(
+            a.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            b.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+
     private static JobSummary BuildSummary(string jobDirectory)
     {
         string folderName = Path.GetFileName(jobDirectory);

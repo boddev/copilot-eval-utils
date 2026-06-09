@@ -378,7 +378,7 @@ public sealed class TrayIconService : ITrayIconService
         }
     }
 
-    private void RequestExit()
+    public void RequestExit()
     {
         // Slice 28 GPT-5.5 code-review non-blocker: make this idempotent.
         // Two exit clicks (or an Exit click racing with another exit

@@ -145,4 +145,94 @@ public sealed class JobsRepositoryTests : IDisposable
         Assert.DoesNotContain(summary.OutputPaths, p =>
             p.EndsWith(JobMetadataStore.TempSuffix, StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void DeleteJob_RemovesFolderAndContents()
+    {
+        var jobDir = MakeJobDir("20251201-101530-123-doomed");
+        File.WriteAllText(Path.Combine(jobDir, "eval-set.csv"), "id,name\n1,a\n");
+
+        _repo.DeleteJob(_workspace, "20251201-101530-123-doomed");
+
+        Assert.False(Directory.Exists(jobDir));
+        Assert.Empty(_repo.ListJobs(_workspace));
+    }
+
+    [Fact]
+    public void DeleteJob_MissingFolder_IsNoOp()
+    {
+        // Idempotent: deleting an already-gone job is treated as success.
+        _repo.DeleteJob(_workspace, "20251201-101530-123-never-existed");
+    }
+
+    [Fact]
+    public void DeleteJob_LeavesOtherJobsIntact()
+    {
+        var keep = MakeJobDir("20251201-100000-000-keep");
+        MakeJobDir("20251201-100100-000-remove");
+
+        _repo.DeleteJob(_workspace, "20251201-100100-000-remove");
+
+        var remaining = Assert.Single(_repo.ListJobs(_workspace));
+        Assert.EndsWith("-keep", remaining.JobId, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(keep));
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("../escape")]
+    [InlineData("sub/child")]
+    [InlineData("sub\\child")]
+    public void DeleteJob_RejectsTraversalOrNestedIds(string jobId)
+    {
+        Assert.Throws<ArgumentException>(() => _repo.DeleteJob(_workspace, jobId));
+    }
+
+    [Fact]
+    public void DeleteJob_RejectsRootedJobId()
+    {
+        string rooted = Path.Combine(Path.GetTempPath(), "elsewhere");
+        Assert.Throws<ArgumentException>(() => _repo.DeleteJob(_workspace, rooted));
+    }
+
+    [Fact]
+    public void DeleteJob_DoesNotEscapeJobsRoot_ViaSiblingPrefix()
+    {
+        // A traversal that resolves to a sibling of the jobs root must be
+        // rejected even though string-prefix checks might pass.
+        Assert.Throws<ArgumentException>(() => _repo.DeleteJob(_workspace, "..\\jobs-evil"));
+    }
+
+    [Fact]
+    public void DeleteAllJobs_RemovesEveryJobFolder()
+    {
+        MakeJobDir("20251201-100000-000-a");
+        MakeJobDir("20251201-100100-000-b");
+        MakeJobDir("20251201-100200-000-c");
+
+        _repo.DeleteAllJobs(_workspace);
+
+        Assert.Empty(_repo.ListJobs(_workspace));
+    }
+
+    [Fact]
+    public void DeleteAllJobs_LeavesNonJobFilesAtJobsRoot()
+    {
+        MakeJobDir("20251201-100000-000-a");
+        string jobsRoot = Path.Combine(_workspace, JobsRepository.JobsSubdirectory);
+        string stray = Path.Combine(jobsRoot, "README.txt");
+        File.WriteAllText(stray, "not a job");
+
+        _repo.DeleteAllJobs(_workspace);
+
+        Assert.Empty(_repo.ListJobs(_workspace));
+        Assert.True(File.Exists(stray));
+    }
+
+    [Fact]
+    public void DeleteAllJobs_MissingJobsDirectory_IsNoOp()
+    {
+        _repo.DeleteAllJobs(_workspace);
+    }
 }

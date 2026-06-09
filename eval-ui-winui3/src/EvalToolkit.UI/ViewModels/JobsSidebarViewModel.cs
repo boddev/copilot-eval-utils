@@ -131,6 +131,53 @@ public sealed partial class JobsSidebarViewModel : ObservableObject, IDisposable
     }
 #pragma warning restore CA1822
 
+    /// <summary>
+    /// Permanently delete a single job folder, then refresh the list.
+    /// The view is responsible for confirming with the user first.
+    /// Filesystem errors are caught and logged so a locked folder cannot
+    /// crash the app; the failed job simply remains visible after refresh.
+    /// </summary>
+    [RelayCommand]
+    public async Task DeleteJobAsync(JobSummaryViewModel? job)
+    {
+        if (job is null || _disposed) return;
+        try
+        {
+            await Task.Run(() => _repository.DeleteJob(_workspaceRoot, job.JobId)).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"JobsSidebar delete failed: {ex}");
+        }
+        finally
+        {
+            await RefreshAsync().ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    /// Permanently delete every job folder, then refresh the list. The
+    /// view confirms with the user first. Per-folder failures are
+    /// tolerated by the repository; the refresh reflects what remains.
+    /// </summary>
+    [RelayCommand]
+    public async Task ClearAllJobsAsync()
+    {
+        if (_disposed) return;
+        try
+        {
+            await Task.Run(() => _repository.DeleteAllJobs(_workspaceRoot)).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"JobsSidebar clear-all failed: {ex}");
+        }
+        finally
+        {
+            await RefreshAsync().ConfigureAwait(true);
+        }
+    }
+
     private void OnJobStateChanged(object? sender, JobStateChangedEventArgs e)
     {
         // GPT-5.5 review #2: observe fire-and-forget failures so a

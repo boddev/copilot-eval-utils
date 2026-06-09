@@ -92,6 +92,15 @@ public interface ITrayIconService : IDisposable
     event EventHandler? ExitRequested;
 
     /// <summary>
+    /// Begins a full application shutdown: sets <see cref="IsExiting"/>
+    /// and raises <see cref="ExitRequested"/> exactly once (idempotent).
+    /// Invoked by the tray menu's <em>Exit</em> item and by the shell
+    /// window's Close button so clicking X terminates the process rather
+    /// than hiding to the tray.
+    /// </summary>
+    void RequestExit();
+
+    /// <summary>
     /// On first hide-to-tray, surfaces a one-time balloon explaining
     /// that the application is still running and how to fully exit.
     /// Subsequent calls are no-ops. State is in-memory only for slice

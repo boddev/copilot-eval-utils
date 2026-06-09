@@ -32,20 +32,17 @@ public sealed partial class ShellWindow : Window
         // by a window-state service introduced in winui-jobs-history.
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1200, 800));
 
-        // Slice 28: route the window X click through the tray service
-        // so the app stays alive in the notification area. The tray's
-        // Exit menu sets Tray.IsExiting before raising ExitRequested,
-        // and App.OnTrayExitRequested calls Application.Exit() — at
-        // that point Closing fires again with IsExiting=true and we
-        // let it proceed.
+        // Slice 28 originally rerouted the window X to hide-to-tray. The
+        // app now exits on close per user request: cancel this close and
+        // request a graceful, full shutdown on the next dispatcher turn.
+        // Enqueueing avoids re-entering this handler synchronously while
+        // Application.Exit() (driven by ExitRequested) closes the window;
+        // that re-raised Closing sees IsExiting==true above and proceeds.
         AppWindow.Closing += OnAppWindowClosing;
     }
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs e)
     {
-        // Tray may be null in very early teardown or if a future refactor
-        // bypasses initialization; in that case allow the close to
-        // proceed so the app can still exit normally.
         var tray = App.Current.Tray;
         if (tray is null || tray.IsExiting)
         {
@@ -53,8 +50,7 @@ public sealed partial class ShellWindow : Window
         }
 
         e.Cancel = true;
-        tray.HideToTray();
-        tray.ShowFirstHideHint();
+        DispatcherQueue.TryEnqueue(tray.RequestExit);
     }
 
     /// <summary>

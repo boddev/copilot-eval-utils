@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using EvalToolkit.UI.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -108,9 +109,54 @@ public sealed partial class MainShell : Page
             reveal.Click += (_, _) => ViewModel.Sidebar.RevealJobFolderCommand.Execute(job);
             menu.Items.Add(reveal);
 
+            menu.Items.Add(new MenuFlyoutSeparator());
+
+            var delete = new MenuFlyoutItem { Text = "Delete" };
+            delete.Click += async (_, _) => await ConfirmAndDeleteJobAsync(job);
+            menu.Items.Add(delete);
+
             menu.ShowAt(fe, e.GetPosition(fe));
             e.Handled = true;
         }
+    }
+
+    private async void ClearAllJobsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ViewModel.Sidebar.HasJobs) return;
+        bool confirmed = await ConfirmAsync(
+            "Delete all jobs?",
+            "This permanently deletes every job folder from disk. This cannot be undone.",
+            "Delete all");
+        if (confirmed)
+        {
+            await ViewModel.Sidebar.ClearAllJobsCommand.ExecuteAsync(null);
+        }
+    }
+
+    private async Task ConfirmAndDeleteJobAsync(JobSummaryViewModel job)
+    {
+        bool confirmed = await ConfirmAsync(
+            "Delete job?",
+            $"This permanently deletes \"{job.DisplayName}\" from disk. This cannot be undone.",
+            "Delete");
+        if (confirmed)
+        {
+            await ViewModel.Sidebar.DeleteJobCommand.ExecuteAsync(job);
+        }
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string content, string primaryText)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            Content = content,
+            PrimaryButtonText = primaryText,
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+            XamlRoot = XamlRoot,
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
     private void DiagnosticsButton_Click(object sender, RoutedEventArgs e)
